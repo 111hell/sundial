@@ -38,7 +38,9 @@ func (s *Sundial) Watch(ctx context.Context, opts WatchOptions) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			_ = s.watchReload(ctx, opts)
+			if err := s.watchReload(ctx, opts); err != nil {
+				return err
+			}
 		}
 	}
 }

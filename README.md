@@ -141,6 +141,16 @@ Concrete storage implementations live under `provider/<source>`. The core packag
 - Writes on the same instance are serialized; reads are safe to use concurrently.
 - Concurrent writers across multiple instances use last-write-wins semantics.
 
+## Development
+
+The repository pins its golangci-lint version. Run the local quality gate with [Just](https://just.systems/):
+
+```sh
+just lint # Check without modifying files.
+just fmt  # Apply the configured formatters.
+just test # Run lint and race-enabled tests.
+```
+
 ## License
 
 [MIT](LICENSE)

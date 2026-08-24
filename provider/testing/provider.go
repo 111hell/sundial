@@ -104,6 +104,7 @@ func (p *Provider) SaveCount() int {
 // WatchProvider adds native watch support to Provider.
 type WatchProvider struct {
 	*Provider
+
 	changes chan struct{}
 }
 

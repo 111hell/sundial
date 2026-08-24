@@ -23,7 +23,7 @@ func emptySnapshot() *snapshot {
 }
 
 func decodeSnapshot(codec codec.Codec, data []byte) (*snapshot, error) {
-	if len(strings.TrimSpace(string(data))) == 0 {
+	if strings.TrimSpace(string(data)) == "" {
 		return &snapshot{
 			values: map[string]any{},
 			hash:   sha256.Sum256(data),

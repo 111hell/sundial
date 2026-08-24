@@ -1,0 +1,114 @@
+version: "2"
+
+linters:
+  enable:
+    - asasalint
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - copyloopvar
+    - durationcheck
+    - embeddedstructfieldcheck
+    - errorlint
+    - exhaustruct_v5
+    - exptostd
+    - fatcontext
+    - goconst
+    - gocritic
+    - gosec
+    - intrange
+    - iotamixing
+    - makezero
+    - mirror
+    - misspell
+    - modernize
+    - musttag
+    - nakedret
+    - nilerr
+    - nilnesserr
+    - nolintlint
+    - nosprintfhostport
+    - paralleltest
+    - perfsprint
+    - predeclared
+    - reassign
+    - sloglint
+    - testifylint
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    exhaustruct_v5:
+      enforce-patterns:
+        - github\.com/sundayfun/sundial.*
+      explicit-mode: true
+    goconst:
+      ignore-tests: true
+    gocritic:
+      disabled-checks:
+        - httpNoBody
+        - ifElseChain
+        - importShadow
+        - unnamedResult
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+    govet:
+      disable:
+        - fieldalignment
+      enable-all: true
+    misspell:
+      locale: US
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    sloglint:
+      static-msg: true
+      key-naming-case: snake
+      forbidden-keys:
+        - level
+        - msg
+        - source
+        - time
+    staticcheck:
+      checks:
+        - all
+    testifylint:
+      enable-all: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - builtin$
+      - examples$
+      - third_party$
+    rules:
+      - path: (.+)_test\.go|.*testing/.*
+        linters:
+          - exhaustruct_v5
+
+formatters:
+  enable:
+    - gofumpt
+    - golines
+  settings:
+    gofumpt:
+      module-path: github.com/sundayfun/sundial
+    golines:
+      max-len: 140
+  exclusions:
+    generated: lax
+    paths:
+      - builtin$
+      - examples$
+      - third_party$

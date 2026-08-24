@@ -161,14 +161,14 @@ func TestAddSetDeletePersistCompleteDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Add() error = %v", err)
 	}
-	if err := config.Add(context.Background(), "server", map[string]any{}); !errors.Is(err, sundial.ErrAlreadyExists) {
-		t.Fatalf("second Add() error = %v, want ErrAlreadyExists", err)
+	if addErr := config.Add(context.Background(), "server", map[string]any{}); !errors.Is(addErr, sundial.ErrAlreadyExists) {
+		t.Fatalf("second Add() error = %v, want ErrAlreadyExists", addErr)
 	}
-	if err := config.Set(context.Background(), "server.port", 9090); err != nil {
-		t.Fatalf("Set() error = %v", err)
+	if setErr := config.Set(context.Background(), "server.port", 9090); setErr != nil {
+		t.Fatalf("Set() error = %v", setErr)
 	}
-	if err := config.Delete(context.Background(), "server.host"); err != nil {
-		t.Fatalf("Delete() error = %v", err)
+	if deleteErr := config.Delete(context.Background(), "server.host"); deleteErr != nil {
+		t.Fatalf("Delete() error = %v", deleteErr)
 	}
 
 	if got := config.Int("server.port"); got != 9090 {
@@ -258,11 +258,21 @@ func TestGetReturnsDetachedValues(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	server := config.Get("server").(map[string]any)
-	server["tags"].([]any)[0] = "mutated"
+	server, ok := config.Get("server").(map[string]any)
+	if !ok {
+		t.Fatalf("Get(server) type = %T, want map[string]any", config.Get("server"))
+	}
+	tags, ok := server["tags"].([]any)
+	if !ok {
+		t.Fatalf("server.tags type = %T, want []any", server["tags"])
+	}
+	tags[0] = "mutated"
 
-	tags := config.Get("server.tags").([]any)
-	if got := tags[0]; got != "api" {
+	loadedTags, ok := config.Get("server.tags").([]any)
+	if !ok {
+		t.Fatalf("Get(server.tags) type = %T, want []any", config.Get("server.tags"))
+	}
+	if got := loadedTags[0]; got != "api" {
 		t.Fatalf("server.tags[0] = %v, want api", got)
 	}
 }

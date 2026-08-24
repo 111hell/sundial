@@ -141,6 +141,16 @@ type Watcher interface {
 - 同一实例的写操作串行执行，读操作支持并发使用。
 - 多实例并发写入采用 last-write-wins 语义。
 
+## 开发
+
+仓库固定了 golangci-lint 版本。使用 [Just](https://just.systems/) 运行本地质量门禁：
+
+```sh
+just lint # 只检查，不修改文件。
+just fmt  # 使用已配置的 formatter 格式化代码。
+just test # 运行 lint 和 race test。
+```
+
 ## 许可证
 
 [MIT](LICENSE)

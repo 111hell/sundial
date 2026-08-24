@@ -2,6 +2,7 @@ package sundial
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -13,10 +14,8 @@ func splitPath(path string) ([]string, error) {
 	}
 
 	parts := strings.Split(path, pathSeparator)
-	for _, part := range parts {
-		if part == "" {
-			return nil, fmt.Errorf("%w: %q", ErrInvalidPath, path)
-		}
+	if slices.Contains(parts, "") {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidPath, path)
 	}
 	return parts, nil
 }

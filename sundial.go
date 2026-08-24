@@ -77,14 +77,20 @@ func (s *Sundial) Exists(path string) bool {
 // String returns a string value or the zero value when the path is absent or has another type.
 func (s *Sundial) String(path string) string {
 	value, _ := lookupPath(s.snapshot.Load().values, path)
-	result, _ := value.(string)
+	result, ok := value.(string)
+	if !ok {
+		return ""
+	}
 	return result
 }
 
 // Bool returns a bool value or the zero value when the path is absent or has another type.
 func (s *Sundial) Bool(path string) bool {
 	value, _ := lookupPath(s.snapshot.Load().values, path)
-	result, _ := value.(bool)
+	result, ok := value.(bool)
+	if !ok {
+		return false
+	}
 	return result
 }
 
