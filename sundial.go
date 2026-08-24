@@ -21,16 +21,12 @@ type Sundial[T any] struct {
 	snapshot atomic.Pointer[snapshot]
 }
 
-// New creates a Sundial instance and loads its initial configuration.
+// New creates a Sundial instance backed by provider and loads its initial configuration.
 // A missing configuration document starts with the zero value of T.
-func New[T any](ctx context.Context, opts ...Option) (*Sundial[T], error) {
-	normalized, err := normalizeOptions(opts)
-	if err != nil {
-		return nil, err
-	}
-
+func New[T any](ctx context.Context, provider Provider, opts ...Option) (*Sundial[T], error) {
+	normalized := normalizeOptions(opts)
 	s := &Sundial[T]{
-		provider:      normalized.Provider,
+		provider:      provider,
 		codec:         normalized.Codec,
 		watchInterval: normalized.WatchInterval,
 		writeMu:       sync.Mutex{},

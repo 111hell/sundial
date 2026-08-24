@@ -34,14 +34,14 @@ type Config struct {
 }
 ```
 
-使用 functional options 创建实例。`New` 会加载并验证初始配置：
+使用 Provider 创建实例，其他可选行为通过 functional options 配置。`New` 会加载并验证初始配置：
 
 ```go
 ctx := context.Background()
 
 configStore, err := sundial.New[Config](
 	ctx,
-	sundial.WithProvider(source),
+	source,
 )
 if err != nil {
 	log.Fatal(err)
@@ -107,7 +107,7 @@ go func() {
 }()
 ```
 
-Provider 可以通过实现 `Watcher` 提供原生变化通知；否则 Sundial 会按照 `WithWatchInterval` 配置的时间间隔轮询 Provider。
+Provider 可以通过实现 `Watcher` 提供原生变化通知；否则 Sundial 默认每 30 秒轮询一次 Provider，可通过 `WithWatchInterval` 修改间隔。
 
 外部内容必须成功解码为应用的配置类型后才会发布。重新加载失败时保留上一份有效快照，并通过 `WithOnError` 报告错误。
 
@@ -120,7 +120,7 @@ import yamlcodec "github.com/sundayfun/sundial/codec/yaml"
 
 configStore, err := sundial.New[Config](
 	ctx,
-	sundial.WithProvider(source),
+	source,
 	sundial.WithCodec(yamlcodec.New()),
 )
 ```

@@ -10,7 +10,6 @@ import (
 const defaultWatchInterval = 30 * time.Second
 
 type options struct {
-	Provider      Provider
 	Codec         codec.Codec
 	WatchInterval time.Duration
 }
@@ -18,17 +17,12 @@ type options struct {
 // Option configures a Sundial instance.
 type Option func(*options)
 
-// WithProvider configures the storage provider.
-func WithProvider(provider Provider) Option {
-	return func(opts *options) {
-		opts.Provider = provider
-	}
-}
-
 // WithCodec configures the document codec. JSON is used by default.
 func WithCodec(value codec.Codec) Option {
 	return func(opts *options) {
-		opts.Codec = value
+		if value != nil {
+			opts.Codec = value
+		}
 	}
 }
 
@@ -36,7 +30,9 @@ func WithCodec(value codec.Codec) Option {
 // does not implement Watcher.
 func WithWatchInterval(interval time.Duration) Option {
 	return func(opts *options) {
-		opts.WatchInterval = interval
+		if interval > 0 {
+			opts.WatchInterval = interval
+		}
 	}
 }
 
@@ -65,9 +61,8 @@ func WithOnError(callback func(error)) WatchOption {
 	}
 }
 
-func normalizeOptions(optionFunctions []Option) (options, error) {
+func normalizeOptions(optionFunctions []Option) options {
 	normalized := options{
-		Provider:      nil,
 		Codec:         jsoncodec.New(),
 		WatchInterval: defaultWatchInterval,
 	}
@@ -77,16 +72,7 @@ func normalizeOptions(optionFunctions []Option) (options, error) {
 		}
 	}
 
-	if normalized.Provider == nil {
-		return options{}, ErrProviderRequired
-	}
-	if normalized.Codec == nil {
-		normalized.Codec = jsoncodec.New()
-	}
-	if normalized.WatchInterval <= 0 {
-		normalized.WatchInterval = defaultWatchInterval
-	}
-	return normalized, nil
+	return normalized
 }
 
 func normalizeWatchOptions(optionFunctions []WatchOption) watchOptions {

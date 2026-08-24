@@ -34,14 +34,14 @@ type Config struct {
 }
 ```
 
-Create an instance with functional options. `New` loads and validates the initial document:
+Create an instance with a Provider. Optional behavior uses functional options. `New` loads and validates the initial document:
 
 ```go
 ctx := context.Background()
 
 configStore, err := sundial.New[Config](
 	ctx,
-	sundial.WithProvider(source),
+	source,
 )
 if err != nil {
 	log.Fatal(err)
@@ -107,7 +107,7 @@ go func() {
 }()
 ```
 
-Providers may implement native change notifications through `Watcher`. Otherwise, Sundial polls the Provider using the interval configured by `WithWatchInterval`.
+Providers may implement native change notifications through `Watcher`. Otherwise, Sundial polls the Provider every 30 seconds by default; use `WithWatchInterval` to change the interval.
 
 External content is decoded as the application's configuration type before publication. A failed reload keeps the last valid snapshot and is reported through `WithOnError`.
 
@@ -120,7 +120,7 @@ import yamlcodec "github.com/sundayfun/sundial/codec/yaml"
 
 configStore, err := sundial.New[Config](
 	ctx,
-	sundial.WithProvider(source),
+	source,
 	sundial.WithCodec(yamlcodec.New()),
 )
 ```

@@ -59,7 +59,7 @@ func TestNewLoadsTypedConfigurationIntoMemory(t *testing.T) {
 	}`))
 	configStore, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(provider),
+		provider,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -97,7 +97,7 @@ func TestMissingConfigurationStartsWithZeroValue(t *testing.T) {
 
 	configStore, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(providertesting.New(nil)),
+		providertesting.New(nil),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -114,21 +114,12 @@ func TestMissingConfigurationStartsWithZeroValue(t *testing.T) {
 	}
 }
 
-func TestNewRequiresProvider(t *testing.T) {
-	t.Parallel()
-
-	_, err := sundial.New[testConfig](context.Background())
-	if !errors.Is(err, sundial.ErrProviderRequired) {
-		t.Fatalf("New() error = %v, want ErrProviderRequired", err)
-	}
-}
-
 func TestNewRejectsInvalidConfiguration(t *testing.T) {
 	t.Parallel()
 
 	_, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(providertesting.New([]byte(`{"server":`))),
+		providertesting.New([]byte(`{"server":`)),
 	)
 	if err == nil {
 		t.Fatal("New() error = nil, want decode failure")
@@ -142,7 +133,7 @@ func TestCustomCodec(t *testing.T) {
 	provider := providertesting.New([]byte(`custom:{"enabled":true}`))
 	configStore, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(provider),
+		provider,
 		sundial.WithCodec(prefixedJSONCodec{prefix: []byte(prefix)}),
 	)
 	if err != nil {
@@ -168,7 +159,7 @@ func TestYAMLCodec(t *testing.T) {
 	provider := providertesting.New([]byte("server:\n  port: 8080\n"))
 	configStore, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(provider),
+		provider,
 		sundial.WithCodec(yamlcodec.New()),
 	)
 	if err != nil {
@@ -201,7 +192,7 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 	}`))
 	configStore, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(provider),
+		provider,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -229,7 +220,7 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 
 	reloaded, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(provider),
+		provider,
 	)
 	if err != nil {
 		t.Fatalf("reload New() error = %v", err)
@@ -249,7 +240,7 @@ func TestSaveFailureKeepsPreviousMemory(t *testing.T) {
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
 	configStore, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(provider),
+		provider,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -280,7 +271,7 @@ func TestReloadFailureKeepsPreviousMemory(t *testing.T) {
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
 	configStore, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(provider),
+		provider,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -308,7 +299,7 @@ func TestGetReturnsDetachedConfiguration(t *testing.T) {
 	}`))
 	configStore, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(provider),
+		provider,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -343,7 +334,7 @@ func TestWatchPollingReloadsExternalChanges(t *testing.T) {
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
 	configStore, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(provider),
+		provider,
 		sundial.WithWatchInterval(5*time.Millisecond),
 	)
 	if err != nil {
@@ -385,7 +376,7 @@ func TestNativeWatchReloadsExternalChanges(t *testing.T) {
 	provider := providertesting.NewWatcher([]byte(`{"enabled":false}`))
 	configStore, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(provider),
+		provider,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -426,7 +417,7 @@ func TestConcurrentReadsAndWrites(t *testing.T) {
 	provider := providertesting.New([]byte(`{"counter":0}`))
 	configStore, err := sundial.New[testConfig](
 		context.Background(),
-		sundial.WithProvider(provider),
+		provider,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
