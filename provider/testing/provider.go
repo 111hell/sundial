@@ -1,0 +1,145 @@
+// Package providertesting provides Provider implementations for Sundial tests.
+package providertesting
+
+import (
+	"context"
+	"errors"
+	"sync"
+
+	"github.com/sundayfun/sundial"
+)
+
+// Provider is a concurrency-safe test Provider without native watch support.
+type Provider struct {
+	mu        sync.RWMutex
+	data      []byte
+	exists    bool
+	loadErr   error
+	saveErr   error
+	loadCount int
+	saveCount int
+}
+
+// New creates a Provider. A nil document represents a missing configuration.
+func New(data []byte) *Provider {
+	return &Provider{
+		data:   cloneBytes(data),
+		exists: data != nil,
+	}
+}
+
+// Load returns the current test document.
+func (p *Provider) Load(context.Context) ([]byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.loadCount++
+	if p.loadErr != nil {
+		return nil, p.loadErr
+	}
+	if !p.exists {
+		return nil, sundial.ErrNotFound
+	}
+	return cloneBytes(p.data), nil
+}
+
+// Save replaces the current test document.
+func (p *Provider) Save(_ context.Context, data []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.saveCount++
+	if p.saveErr != nil {
+		return p.saveErr
+	}
+	p.data = cloneBytes(data)
+	p.exists = true
+	return nil
+}
+
+// SetData simulates an external configuration change.
+func (p *Provider) SetData(data []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.data = cloneBytes(data)
+	p.exists = data != nil
+}
+
+// SetLoadError configures Load to fail.
+func (p *Provider) SetLoadError(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.loadErr = err
+}
+
+// SetSaveError configures Save to fail.
+func (p *Provider) SetSaveError(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.saveErr = err
+}
+
+// Data returns a copy of the current test document.
+func (p *Provider) Data() []byte {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return cloneBytes(p.data)
+}
+
+// LoadCount returns the number of Load calls.
+func (p *Provider) LoadCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.loadCount
+}
+
+// SaveCount returns the number of Save calls.
+func (p *Provider) SaveCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.saveCount
+}
+
+// WatchProvider adds native watch support to Provider.
+type WatchProvider struct {
+	*Provider
+	changes chan struct{}
+}
+
+// NewWatcher creates a Provider with native watch support.
+func NewWatcher(data []byte) *WatchProvider {
+	return &WatchProvider{
+		Provider: New(data),
+		changes:  make(chan struct{}, 1),
+	}
+}
+
+// Change simulates an external change and notifies Watch.
+func (p *WatchProvider) Change(data []byte) {
+	p.SetData(data)
+	select {
+	case p.changes <- struct{}{}:
+	default:
+	}
+}
+
+// Watch waits for simulated changes.
+func (p *WatchProvider) Watch(ctx context.Context, notify func() error) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.changes:
+			if err := notify(); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
+			}
+		}
+	}
+}
+
+func cloneBytes(data []byte) []byte {
+	return append([]byte(nil), data...)
+}
