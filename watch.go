@@ -8,13 +8,15 @@ import (
 )
 
 // Reload replaces the in-memory state when the Provider content changed.
-func (s *Sundial) Reload(ctx context.Context) error {
+func (s *Sundial[T]) Reload(ctx context.Context) error {
 	_, err := s.reload(ctx)
 	return err
 }
 
 // Watch blocks until ctx is canceled or a native Provider watcher stops.
-func (s *Sundial) Watch(ctx context.Context, opts WatchOptions) error {
+func (s *Sundial[T]) Watch(ctx context.Context, optionFunctions ...WatchOption) error {
+	opts := normalizeWatchOptions(optionFunctions)
+
 	// Close the gap between New's initial load and watcher registration.
 	if err := s.watchReload(ctx, opts); err != nil {
 		return err
@@ -45,7 +47,7 @@ func (s *Sundial) Watch(ctx context.Context, opts WatchOptions) error {
 	}
 }
 
-func (s *Sundial) watchReload(ctx context.Context, opts WatchOptions) error {
+func (s *Sundial[T]) watchReload(ctx context.Context, opts watchOptions) error {
 	changed, err := s.reload(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -62,7 +64,7 @@ func (s *Sundial) watchReload(ctx context.Context, opts WatchOptions) error {
 	return nil
 }
 
-func (s *Sundial) reload(ctx context.Context) (bool, error) {
+func (s *Sundial[T]) reload(ctx context.Context) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
@@ -73,7 +75,7 @@ func (s *Sundial) reload(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("sundial: load configuration: %w", err)
 	}
 
-	next, err := decodeSnapshot(s.codec, data)
+	next, err := decodeSnapshot[T](s.codec, data)
 	if err != nil {
 		return false, err
 	}

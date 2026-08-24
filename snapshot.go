@@ -8,61 +8,35 @@ import (
 	"github.com/sundayfun/sundial/codec"
 )
 
-// snapshot is one configuration version published for concurrent reads.
-// Its values must not be mutated after publication; hash detects source changes.
+// snapshot is one immutable encoded configuration version published for
+// concurrent reads. The hash detects source changes.
 type snapshot struct {
-	values map[string]any
-	hash   [sha256.Size]byte
+	data []byte
+	hash [sha256.Size]byte
 }
 
-func emptySnapshot() *snapshot {
-	return &snapshot{
-		values: map[string]any{},
-		hash:   sha256.Sum256(nil),
-	}
-}
-
-func decodeSnapshot(codec codec.Codec, data []byte) (*snapshot, error) {
-	if strings.TrimSpace(string(data)) == "" {
-		return &snapshot{
-			values: map[string]any{},
-			hash:   sha256.Sum256(data),
-		}, nil
-	}
-
-	values := map[string]any{}
-	if err := codec.Decode(data, &values); err != nil {
+func decodeSnapshot[T any](documentCodec codec.Codec, data []byte) (*snapshot, error) {
+	if _, err := decodeConfig[T](documentCodec, data); err != nil {
 		return nil, fmt.Errorf("sundial: decode configuration: %w", err)
 	}
-	if values == nil {
-		values = map[string]any{}
-	}
+
 	return &snapshot{
-		values: values,
-		hash:   sha256.Sum256(data),
+		data: cloneBytes(data),
+		hash: sha256.Sum256(data),
 	}, nil
 }
 
-// cloneMap detaches mutable maps and slices from a published snapshot.
-func cloneMap(src map[string]any) map[string]any {
-	dest := make(map[string]any, len(src))
-	for key, value := range src {
-		dest[key] = cloneValue(value)
+func decodeConfig[T any](documentCodec codec.Codec, data []byte) (T, error) {
+	var config T
+	if strings.TrimSpace(string(data)) == "" {
+		return config, nil
 	}
-	return dest
+	if err := documentCodec.Decode(data, &config); err != nil {
+		return config, err
+	}
+	return config, nil
 }
 
-func cloneValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return cloneMap(typed)
-	case []any:
-		cloned := make([]any, len(typed))
-		for i := range typed {
-			cloned[i] = cloneValue(typed[i])
-		}
-		return cloned
-	default:
-		return typed
-	}
+func cloneBytes(data []byte) []byte {
+	return append([]byte(nil), data...)
 }

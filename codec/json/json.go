@@ -1,7 +1,7 @@
 // Package json provides a JSON codec backed by the Go standard library.
 package json
 
-import stdjson "encoding/json"
+import stdjson "encoding/json/v2"
 
 // Codec encodes and decodes JSON documents.
 type Codec struct{}

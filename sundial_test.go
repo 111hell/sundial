@@ -14,6 +14,25 @@ import (
 	providertesting "github.com/sundayfun/sundial/provider/testing"
 )
 
+type testConfig struct {
+	Server  serverConfig      `json:"server"`
+	Enabled bool              `json:"enabled"`
+	Ratio   float64           `json:"ratio"`
+	Counter int               `json:"counter"`
+	Labels  map[string]string `json:"labels"`
+}
+
+type serverConfig struct {
+	Host string     `json:"host"`
+	Port int        `json:"port"`
+	Tags []string   `json:"tags"`
+	TLS  *tlsConfig `json:"tls"`
+}
+
+type tlsConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
 type prefixedJSONCodec struct {
 	prefix []byte
 }
@@ -30,68 +49,89 @@ func (c prefixedJSONCodec) Decode(data []byte, value any) error {
 	return json.Unmarshal(bytes.TrimPrefix(data, c.prefix), value)
 }
 
-func TestNewLoadsConfigurationIntoMemory(t *testing.T) {
+func TestNewLoadsTypedConfigurationIntoMemory(t *testing.T) {
 	t.Parallel()
 
-	provider := providertesting.New([]byte(`{"server":{"port":8080},"ratio":1.5,"enabled":true}`))
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider: provider,
-	})
+	provider := providertesting.New([]byte(`{
+		"server":{"host":"127.0.0.1","port":8080},
+		"ratio":1.5,
+		"enabled":true
+	}`))
+	configStore, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(provider),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if got := config.Int("server.port"); got != 8080 {
-		t.Fatalf("Int(server.port) = %d, want 8080", got)
+	config, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
 	}
-	if got := config.Int("ratio"); got != 0 {
-		t.Fatalf("Int(ratio) = %d, want 0 for a fractional value", got)
+	if config.Server.Port != 8080 {
+		t.Fatalf("Get().Server.Port = %d, want 8080", config.Server.Port)
 	}
-	if !config.Bool("enabled") {
-		t.Fatal("Bool(enabled) = false, want true")
+	if config.Ratio != 1.5 {
+		t.Fatalf("Get().Ratio = %v, want 1.5", config.Ratio)
+	}
+	if !config.Enabled {
+		t.Fatal("Get().Enabled = false, want true")
 	}
 	if got := provider.LoadCount(); got != 1 {
 		t.Fatalf("LoadCount() = %d, want 1", got)
 	}
 
 	for range 10 {
-		_ = config.Int("server.port")
+		if _, getErr := configStore.Get(); getErr != nil {
+			t.Fatalf("Get() error = %v", getErr)
+		}
 	}
 	if got := provider.LoadCount(); got != 1 {
 		t.Fatalf("memory reads called Provider.Load: count = %d", got)
 	}
-
-	var server struct {
-		Port int `json:"port"`
-	}
-	if err := config.Unmarshal("server", &server); err != nil {
-		t.Fatalf("Unmarshal(server) error = %v", err)
-	}
-	if server.Port != 8080 {
-		t.Fatalf("Unmarshal(server).Port = %d, want 8080", server.Port)
-	}
 }
 
-func TestMissingConfigurationStartsEmpty(t *testing.T) {
+func TestMissingConfigurationStartsWithZeroValue(t *testing.T) {
 	t.Parallel()
 
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider: providertesting.New(nil),
-	})
+	configStore, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(providertesting.New(nil)),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if config.Exists("server") {
-		t.Fatal("Exists(server) = true, want false")
+
+	config, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if config.Server.Host != "" || config.Server.Port != 0 || config.Server.Tags != nil ||
+		config.Server.TLS != nil || config.Enabled || config.Ratio != 0 || config.Counter != 0 ||
+		config.Labels != nil {
+		t.Fatalf("Get() = %#v, want zero value", config)
 	}
 }
 
 func TestNewRequiresProvider(t *testing.T) {
 	t.Parallel()
 
-	_, err := sundial.New(context.Background(), sundial.Options{})
+	_, err := sundial.New[testConfig](context.Background())
 	if !errors.Is(err, sundial.ErrProviderRequired) {
 		t.Fatalf("New() error = %v, want ErrProviderRequired", err)
+	}
+}
+
+func TestNewRejectsInvalidConfiguration(t *testing.T) {
+	t.Parallel()
+
+	_, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(providertesting.New([]byte(`{"server":`))),
+	)
+	if err == nil {
+		t.Fatal("New() error = nil, want decode failure")
 	}
 }
 
@@ -99,21 +139,23 @@ func TestCustomCodec(t *testing.T) {
 	t.Parallel()
 
 	const prefix = "custom:"
-	codec := prefixedJSONCodec{prefix: []byte(prefix)}
 	provider := providertesting.New([]byte(`custom:{"enabled":true}`))
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider: provider,
-		Codec:    codec,
-	})
+	configStore, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(provider),
+		sundial.WithCodec(prefixedJSONCodec{prefix: []byte(prefix)}),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if !config.Bool("enabled") {
-		t.Fatal("Bool(enabled) = false, want true")
-	}
 
-	if err := config.Set(context.Background(), "enabled", false); err != nil {
-		t.Fatalf("Set() error = %v", err)
+	config, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	config.Enabled = false
+	if putErr := configStore.Put(context.Background(), config); putErr != nil {
+		t.Fatalf("Put() error = %v", putErr)
 	}
 	if !bytes.HasPrefix(provider.Data(), []byte(prefix)) {
 		t.Fatalf("saved data = %q, want custom prefix", provider.Data())
@@ -124,71 +166,80 @@ func TestYAMLCodec(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte("server:\n  port: 8080\n"))
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider: provider,
-		Codec:    yamlcodec.New(),
-	})
+	configStore, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(provider),
+		sundial.WithCodec(yamlcodec.New()),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if got := config.Int("server.port"); got != 8080 {
-		t.Fatalf("Int(server.port) = %d, want 8080", got)
+
+	config, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if config.Server.Port != 8080 {
+		t.Fatalf("Get().Server.Port = %d, want 8080", config.Server.Port)
 	}
 
-	if err := config.Set(context.Background(), "server.port", 9090); err != nil {
-		t.Fatalf("Set() error = %v", err)
+	config.Server.Port = 9090
+	if putErr := configStore.Put(context.Background(), config); putErr != nil {
+		t.Fatalf("Put() error = %v", putErr)
 	}
 	if !bytes.Contains(provider.Data(), []byte("port: 9090")) {
 		t.Fatalf("saved data = %q, want YAML port 9090", provider.Data())
 	}
 }
 
-func TestAddSetDeletePersistCompleteDocument(t *testing.T) {
+func TestPutPersistsCompleteDocument(t *testing.T) {
 	t.Parallel()
 
-	provider := providertesting.New(nil)
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider: provider,
-	})
+	provider := providertesting.New([]byte(`{
+		"server":{"host":"127.0.0.1","port":8080},
+		"enabled":true
+	}`))
+	configStore, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(provider),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	err = config.Add(context.Background(), "server", map[string]any{
-		"host": "127.0.0.1",
-		"port": 8080,
-	})
+	config, err := configStore.Get()
 	if err != nil {
-		t.Fatalf("Add() error = %v", err)
+		t.Fatalf("Get() error = %v", err)
 	}
-	if addErr := config.Add(context.Background(), "server", map[string]any{}); !errors.Is(addErr, sundial.ErrAlreadyExists) {
-		t.Fatalf("second Add() error = %v, want ErrAlreadyExists", addErr)
-	}
-	if setErr := config.Set(context.Background(), "server.port", 9090); setErr != nil {
-		t.Fatalf("Set() error = %v", setErr)
-	}
-	if deleteErr := config.Delete(context.Background(), "server.host"); deleteErr != nil {
-		t.Fatalf("Delete() error = %v", deleteErr)
+	config.Server.Port = 9090
+	if putErr := configStore.Put(context.Background(), config); putErr != nil {
+		t.Fatalf("Put() error = %v", putErr)
 	}
 
-	if got := config.Int("server.port"); got != 9090 {
-		t.Fatalf("Int(server.port) = %d, want 9090", got)
+	if got := provider.SaveCount(); got != 1 {
+		t.Fatalf("SaveCount() = %d, want 1", got)
 	}
-	if config.Exists("server.host") {
-		t.Fatal("Exists(server.host) = true, want false")
+	var saved testConfig
+	if decodeErr := json.Unmarshal(provider.Data(), &saved); decodeErr != nil {
+		t.Fatalf("decode saved configuration: %v", decodeErr)
 	}
-	if got := provider.SaveCount(); got != 3 {
-		t.Fatalf("SaveCount() = %d, want 3", got)
+	if saved.Server.Host != "127.0.0.1" || saved.Server.Port != 9090 || !saved.Enabled {
+		t.Fatalf("saved configuration = %#v, want complete updated document", saved)
 	}
 
-	reloaded, err := sundial.New(context.Background(), sundial.Options{
-		Provider: provider,
-	})
+	reloaded, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(provider),
+	)
 	if err != nil {
 		t.Fatalf("reload New() error = %v", err)
 	}
-	if got := reloaded.Int("server.port"); got != 9090 {
-		t.Fatalf("reloaded Int(server.port) = %d, want 9090", got)
+	reloadedConfig, err := reloaded.Get()
+	if err != nil {
+		t.Fatalf("reload Get() error = %v", err)
+	}
+	if reloadedConfig.Server.Port != 9090 {
+		t.Fatalf("reloaded port = %d, want 9090", reloadedConfig.Server.Port)
 	}
 }
 
@@ -196,34 +247,30 @@ func TestSaveFailureKeepsPreviousMemory(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider: provider,
-	})
+	configStore, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(provider),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
+	config, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	config.Server.Port = 9090
 	provider.SetSaveError(errors.New("save failed"))
-	if err := config.Set(context.Background(), "server.port", 9090); err == nil {
-		t.Fatal("Set() error = nil, want failure")
+	if putErr := configStore.Put(context.Background(), config); putErr == nil {
+		t.Fatal("Put() error = nil, want failure")
 	}
-	if got := config.Int("server.port"); got != 8080 {
-		t.Fatalf("Int(server.port) = %d after failed save, want 8080", got)
-	}
-}
 
-func TestSetRejectsPathConflict(t *testing.T) {
-	t.Parallel()
-
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider: providertesting.New([]byte(`{"server":"disabled"}`)),
-	})
+	current, err := configStore.Get()
 	if err != nil {
-		t.Fatalf("New() error = %v", err)
+		t.Fatalf("Get() after failed Put error = %v", err)
 	}
-
-	if err := config.Set(context.Background(), "server.port", 8080); !errors.Is(err, sundial.ErrPathConflict) {
-		t.Fatalf("Set() error = %v, want ErrPathConflict", err)
+	if current.Server.Port != 8080 {
+		t.Fatalf("port after failed Put = %d, want 8080", current.Server.Port)
 	}
 }
 
@@ -231,49 +278,62 @@ func TestReloadFailureKeepsPreviousMemory(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider: provider,
-	})
+	configStore, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(provider),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
 	provider.SetData([]byte(`{"server":`))
-	if err := config.Reload(context.Background()); err == nil {
-		t.Fatal("Reload() error = nil, want parse failure")
+	if reloadErr := configStore.Reload(context.Background()); reloadErr == nil {
+		t.Fatal("Reload() error = nil, want decode failure")
 	}
-	if got := config.Int("server.port"); got != 8080 {
-		t.Fatalf("Int(server.port) = %d after failed reload, want 8080", got)
+	config, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if config.Server.Port != 8080 {
+		t.Fatalf("port after failed reload = %d, want 8080", config.Server.Port)
 	}
 }
 
-func TestGetReturnsDetachedValues(t *testing.T) {
+func TestGetReturnsDetachedConfiguration(t *testing.T) {
 	t.Parallel()
 
-	provider := providertesting.New([]byte(`{"server":{"tags":["api"]}}`))
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider: provider,
-	})
+	provider := providertesting.New([]byte(`{
+		"server":{"tags":["api"],"tls":{"enabled":true}},
+		"labels":{"region":"east"}
+	}`))
+	configStore, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(provider),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	server, ok := config.Get("server").(map[string]any)
-	if !ok {
-		t.Fatalf("Get(server) type = %T, want map[string]any", config.Get("server"))
+	config, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
 	}
-	tags, ok := server["tags"].([]any)
-	if !ok {
-		t.Fatalf("server.tags type = %T, want []any", server["tags"])
-	}
-	tags[0] = "mutated"
+	config.Server.Tags[0] = "mutated"
+	config.Server.TLS.Enabled = false
+	config.Labels["region"] = "west"
 
-	loadedTags, ok := config.Get("server.tags").([]any)
-	if !ok {
-		t.Fatalf("Get(server.tags) type = %T, want []any", config.Get("server.tags"))
+	current, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("second Get() error = %v", err)
 	}
-	if got := loadedTags[0]; got != "api" {
-		t.Fatalf("server.tags[0] = %v, want api", got)
+	if current.Server.Tags[0] != "api" {
+		t.Fatalf("detached tag = %q, want api", current.Server.Tags[0])
+	}
+	if !current.Server.TLS.Enabled {
+		t.Fatal("detached TLS.Enabled = false, want true")
+	}
+	if current.Labels["region"] != "east" {
+		t.Fatalf("detached region = %q, want east", current.Labels["region"])
 	}
 }
 
@@ -281,10 +341,11 @@ func TestWatchPollingReloadsExternalChanges(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider:      provider,
-		WatchInterval: 5 * time.Millisecond,
-	})
+	configStore, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(provider),
+		sundial.WithWatchInterval(5*time.Millisecond),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -293,9 +354,9 @@ func TestWatchPollingReloadsExternalChanges(t *testing.T) {
 	changed := make(chan struct{}, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- config.Watch(ctx, sundial.WatchOptions{
-			OnChange: func() { changed <- struct{}{} },
-		})
+		done <- configStore.Watch(ctx, sundial.WithOnChange(func() {
+			changed <- struct{}{}
+		}))
 	}()
 
 	provider.SetData([]byte(`{"server":{"port":9090}}`))
@@ -304,8 +365,12 @@ func TestWatchPollingReloadsExternalChanges(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Watch did not report external change")
 	}
-	if got := config.Int("server.port"); got != 9090 {
-		t.Fatalf("Int(server.port) = %d, want 9090", got)
+	config, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if config.Server.Port != 9090 {
+		t.Fatalf("watched port = %d, want 9090", config.Server.Port)
 	}
 
 	cancel()
@@ -318,9 +383,10 @@ func TestNativeWatchReloadsExternalChanges(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.NewWatcher([]byte(`{"enabled":false}`))
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider: provider,
-	})
+	configStore, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(provider),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -329,9 +395,9 @@ func TestNativeWatchReloadsExternalChanges(t *testing.T) {
 	changed := make(chan struct{}, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- config.Watch(ctx, sundial.WatchOptions{
-			OnChange: func() { changed <- struct{}{} },
-		})
+		done <- configStore.Watch(ctx, sundial.WithOnChange(func() {
+			changed <- struct{}{}
+		}))
 	}()
 
 	provider.Change([]byte(`{"enabled":true}`))
@@ -340,8 +406,12 @@ func TestNativeWatchReloadsExternalChanges(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("native Watch did not report external change")
 	}
-	if !config.Bool("enabled") {
-		t.Fatal("Bool(enabled) = false, want true")
+	config, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !config.Enabled {
+		t.Fatal("watched Enabled = false, want true")
 	}
 
 	cancel()
@@ -354,9 +424,10 @@ func TestConcurrentReadsAndWrites(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"counter":0}`))
-	config, err := sundial.New(context.Background(), sundial.Options{
-		Provider: provider,
-	})
+	configStore, err := sundial.New[testConfig](
+		context.Background(),
+		sundial.WithProvider(provider),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -366,14 +437,21 @@ func TestConcurrentReadsAndWrites(t *testing.T) {
 		group.Add(2)
 		go func(value int) {
 			defer group.Done()
-			if err := config.Set(context.Background(), "counter", value); err != nil {
-				t.Errorf("Set() error = %v", err)
+			config, getErr := configStore.Get()
+			if getErr != nil {
+				t.Errorf("Get() error = %v", getErr)
+				return
+			}
+			config.Counter = value
+			if putErr := configStore.Put(context.Background(), config); putErr != nil {
+				t.Errorf("Put() error = %v", putErr)
 			}
 		}(i)
 		go func() {
 			defer group.Done()
-			_ = config.Int("counter")
-			_ = config.Raw()
+			if _, getErr := configStore.Get(); getErr != nil {
+				t.Errorf("Get() error = %v", getErr)
+			}
 		}()
 	}
 	group.Wait()

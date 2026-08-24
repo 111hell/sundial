@@ -2,15 +2,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Sundial 是一个轻量、可扩展的 Go 配置 SDK，提供内存读取和持久化写入能力。
+Sundial 是一个轻量、可扩展、类型安全的 Go 配置 SDK，提供内存读取和持久化写入能力。
 
 ## 为什么选择 Sundial
 
-- **快速读取**：所有 getter 只读取内存快照。
-- **持久化写入**：`Add`、`Set`、`Delete` 会将变更保存到配置源。
-- **实时更新**：`Watch` 将外部变更同步到内存。
-- **存储可扩展**：文件、S3、数据库等配置源均可实现 `Provider`。
-- **格式可扩展**：默认支持 JSON，其他格式使用现成 Codec。
+- **类型安全访问**：应用直接读取自己定义的配置结构体，不再使用字符串路径和 `any`。
+- **快速读取**：`Get` 只读取内存快照。
+- **持久化写入**：`Put` 保存完整的强类型配置文档。
+- **实时更新**：`Watch` 将外部变化同步到内存。
+- **存储和格式可扩展**：配置源实现 `Provider`；默认使用 JSON，其他格式通过 Codec 扩展。
 
 一个 Sundial 实例管理一份完整配置文档。
 
@@ -22,90 +22,110 @@ go get github.com/sundayfun/sundial
 
 ## 快速开始
 
-假设 Provider 中已有配置 `{"server":{"port":8080}}`：
+首先定义应用拥有的配置结构：
+
+```go
+type Config struct {
+	Server struct {
+		Host string `json:"host" yaml:"host"`
+		Port int    `json:"port" yaml:"port"`
+	} `json:"server" yaml:"server"`
+	Debug bool `json:"debug" yaml:"debug"`
+}
+```
+
+使用 functional options 创建实例。`New` 会加载并验证初始配置：
 
 ```go
 ctx := context.Background()
 
-config, err := sundial.New(ctx, sundial.Options{
-	Provider: source,
-})
+configStore, err := sundial.New[Config](
+	ctx,
+	sundial.WithProvider(source),
+)
 if err != nil {
 	log.Fatal(err)
 }
 ```
 
-### 只读使用
+### 读取
 
-`Get` 只读取内存，不会调用 `Provider.Save`：
-
-```go
-port := config.Get("server.port")
-fmt.Println(port) // 8080
-```
-
-同一个实例可以只使用 `Get`、`Exists`、`Unmarshal` 和 `Watch`，不执行任何写入。
-
-### 读写使用
-
-`Set` 先将变更保存到 Provider，成功后更新内存。随后调用 `Get` 会得到新值：
+`Get` 从内存返回独立的强类型副本，不会访问 Provider：
 
 ```go
-if err := config.Set(ctx, "server.port", 9090); err != nil {
+config, err := configStore.Get()
+if err != nil {
 	log.Fatal(err)
 }
 
-port := config.Get("server.port")
-fmt.Println(port) // 9090
+fmt.Println(config.Server.Port)
 ```
 
-配置键及其值类型由使用方定义。`Get` 返回当前内存中的配置值；需要业务结构体时使用 `Unmarshal`。
+修改返回值不会改变 Sundial 的内存状态，只有 `Put` 成功后新配置才会生效。
 
-可用操作：
+### 写入
+
+修改强类型配置，然后持久化完整文档：
 
 ```go
-value := config.Get("server.host")
-exists := config.Exists("server.port")
+config, err := configStore.Get()
+if err != nil {
+	log.Fatal(err)
+}
 
-err := config.Add(ctx, "features.search", true) // 路径已存在时失败。
-err = config.Set(ctx, "server.port", 9090)      // 新增或覆盖配置。
-err = config.Delete(ctx, "features.legacy")    // 删除配置。
+config.Server.Port = 9090
+if err := configStore.Put(ctx, config); err != nil {
+	log.Fatal(err)
+}
 ```
+
+`Put` 先保存到 Provider，成功后才发布新的内存快照；保存失败时继续保留旧快照。
 
 ## 监听变化
 
-`Watch` 会阻塞运行，直到 context 被取消或 Provider 的监听结束。
+`Watch` 会阻塞运行，直到 context 被取消或 Provider 的监听结束：
 
 ```go
 go func() {
-	err := config.Watch(ctx, sundial.WatchOptions{
-		OnChange: func() { log.Println("配置已更新") },
-		OnError:  func(err error) { log.Printf("监听错误: %v", err) },
-	})
+	err := configStore.Watch(
+		ctx,
+		sundial.WithOnChange(func() {
+			config, err := configStore.Get()
+			if err != nil {
+				log.Printf("读取配置失败: %v", err)
+				return
+			}
+			log.Printf("配置已更新: port=%d", config.Server.Port)
+		}),
+		sundial.WithOnError(func(err error) {
+			log.Printf("监听错误: %v", err)
+		}),
+	)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("监听已停止: %v", err)
 	}
 }()
 ```
 
-新内存快照生效后会调用 `OnChange`；重新加载失败或 Provider 监听出错时会调用 `OnError`。重新加载失败不会污染当前配置，轮询会继续运行。
+Provider 可以通过实现 `Watcher` 提供原生变化通知；否则 Sundial 会按照 `WithWatchInterval` 配置的时间间隔轮询 Provider。
 
-Provider 可以通过实现 `Watcher` 提供原生变化通知；否则 Sundial 会按照 `WatchInterval` 轮询配置源。
+外部内容必须成功解码为应用的配置类型后才会发布。重新加载失败时保留上一份有效快照，并通过 `WithOnError` 报告错误。
 
 ## 配置格式
 
-JSON 是默认格式，不需要额外配置。当配置源存储 YAML 时，使用项目提供的 YAML Codec：
+JSON 是默认格式。当配置源存储 YAML 时，使用项目提供的 YAML Codec：
 
 ```go
 import yamlcodec "github.com/sundayfun/sundial/codec/yaml"
 
-config, err := sundial.New(ctx, sundial.Options{
-	Provider: source,
-	Codec:    yamlcodec.New(),
-})
+configStore, err := sundial.New[Config](
+	ctx,
+	sundial.WithProvider(source),
+	sundial.WithCodec(yamlcodec.New()),
+)
 ```
 
-其他格式可以自行实现 `codec.Codec` 接口。
+其他格式可以自行实现 `codec.Codec`。
 
 ## 实现 Provider
 
@@ -135,11 +155,12 @@ type Watcher interface {
 
 ## 行为约定
 
-- 配置路径统一使用点号，例如 `server.port`。
-- 写入失败时，当前内存快照保持不变。
+- 配置文档不存在时，从应用配置类型的零值开始。
+- `Get` 返回独立配置，map、slice 和 pointer 不会与内部快照共享。
+- `Put` 失败时，当前内存快照保持不变。
 - 重新加载失败时，保留上一份有效配置。
-- 同一实例的写操作串行执行，读操作支持并发使用。
-- 多实例并发写入采用 last-write-wins 语义。
+- 同一实例的 `Put` 会串行执行，`Get` 支持并发调用。
+- 同一实例或不同实例的并发 `Put` 均采用 last-write-wins。
 
 ## 开发
 

@@ -14,8 +14,13 @@ ensure-golangci-lint:
 
     bin="{{ golangci-lint }}"
     expected_version="{{ golangci-lint-version }}"
-    if [[ -x "$bin" ]] && [[ "$($bin version | awk '{print "v" $4}')" == "$expected_version" ]]; then
-        exit 0
+    expected_go="$(go env GOVERSION | cut -d. -f1,2)"
+    if [[ -x "$bin" ]]; then
+        version="$($bin version)"
+        if [[ "$(awk '{print "v" $4}' <<< "$version")" == "$expected_version" ]] && \
+            [[ "$(awk '{print $7}' <<< "$version" | cut -d. -f1,2)" == "$expected_go" ]]; then
+            exit 0
+        fi
     fi
 
     mkdir -p "$(dirname "$bin")"

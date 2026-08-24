@@ -2,15 +2,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Sundial is a lightweight, extensible configuration SDK for Go with in-memory reads and persistent writes.
+Sundial is a lightweight, extensible, type-safe configuration SDK for Go with in-memory reads and persistent writes.
 
 ## Why Sundial
 
-- **Fast reads** — getters read only from an in-memory snapshot.
-- **Persistent writes** — `Add`, `Set`, and `Delete` save changes to the configured source.
+- **Type-safe access** — applications read their own configuration struct instead of string paths and `any` values.
+- **Fast reads** — `Get` reads only from an in-memory snapshot.
+- **Persistent writes** — `Put` saves one complete typed configuration document.
 - **Live updates** — `Watch` keeps memory synchronized with external changes.
-- **Extensible storage** — files, S3, databases, and other sources can implement `Provider`.
-- **Flexible formats** — JSON works out of the box; other formats use ready-made codecs.
+- **Extensible storage and formats** — storage sources implement `Provider`; JSON works by default and other formats use codecs.
 
 One Sundial instance manages one complete configuration document.
 
@@ -22,94 +22,114 @@ go get github.com/sundayfun/sundial
 
 ## Quick start
 
-Assume the provider already contains `{"server":{"port":8080}}`:
+Define the configuration owned by the application:
+
+```go
+type Config struct {
+	Server struct {
+		Host string `json:"host" yaml:"host"`
+		Port int    `json:"port" yaml:"port"`
+	} `json:"server" yaml:"server"`
+	Debug bool `json:"debug" yaml:"debug"`
+}
+```
+
+Create an instance with functional options. `New` loads and validates the initial document:
 
 ```go
 ctx := context.Background()
 
-config, err := sundial.New(ctx, sundial.Options{
-	Provider: source,
-})
+configStore, err := sundial.New[Config](
+	ctx,
+	sundial.WithProvider(source),
+)
 if err != nil {
 	log.Fatal(err)
 }
 ```
 
-### Read-only
+### Read
 
-`Get` reads from memory and does not call `Provider.Save`:
-
-```go
-port := config.Get("server.port")
-fmt.Println(port) // 8080
-```
-
-The same instance can use `Get`, `Exists`, `Unmarshal`, and `Watch` without performing any writes.
-
-### Read and write
-
-`Set` saves the change to the provider and then updates memory. A following `Get` returns the new value:
+`Get` returns a detached typed copy from memory and does not call the Provider:
 
 ```go
-if err := config.Set(ctx, "server.port", 9090); err != nil {
+config, err := configStore.Get()
+if err != nil {
 	log.Fatal(err)
 }
 
-port := config.Get("server.port")
-fmt.Println(port) // 9090
+fmt.Println(config.Server.Port)
 ```
 
-Configuration keys and their value types are defined by the application. `Get` returns the value currently stored in memory; use `Unmarshal` when a typed configuration struct is needed.
+Changing the returned value does not change Sundial's in-memory state until `Put` succeeds.
 
-Available operations:
+### Write
+
+Modify the typed configuration and persist the complete document:
 
 ```go
-value := config.Get("server.host")
-exists := config.Exists("server.port")
+config, err := configStore.Get()
+if err != nil {
+	log.Fatal(err)
+}
 
-err := config.Add(ctx, "features.search", true) // Fails if the path exists.
-err = config.Set(ctx, "server.port", 9090)      // Adds or replaces a value.
-err = config.Delete(ctx, "features.legacy")    // Removes a value.
+config.Server.Port = 9090
+if err := configStore.Put(ctx, config); err != nil {
+	log.Fatal(err)
+}
 ```
+
+`Put` saves to the Provider before publishing the new in-memory snapshot. A failed save leaves the previous snapshot unchanged.
 
 ## Watch for changes
 
-`Watch` blocks until its context is canceled or the provider watcher stops.
+`Watch` blocks until its context is canceled or the Provider watcher stops:
 
 ```go
 go func() {
-	err := config.Watch(ctx, sundial.WatchOptions{
-		OnChange: func() { log.Println("configuration updated") },
-		OnError:  func(err error) { log.Printf("watch error: %v", err) },
-	})
+	err := configStore.Watch(
+		ctx,
+		sundial.WithOnChange(func() {
+			config, err := configStore.Get()
+			if err != nil {
+				log.Printf("read configuration: %v", err)
+				return
+			}
+			log.Printf("configuration updated: port=%d", config.Server.Port)
+		}),
+		sundial.WithOnError(func(err error) {
+			log.Printf("watch error: %v", err)
+		}),
+	)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("watch stopped: %v", err)
 	}
 }()
 ```
 
-`OnChange` runs after the new in-memory snapshot is available. `OnError` reports reload or provider-watcher failures. A failed reload keeps the last valid snapshot, and polling continues.
+Providers may implement native change notifications through `Watcher`. Otherwise, Sundial polls the Provider using the interval configured by `WithWatchInterval`.
 
-Providers may implement native change notifications through `Watcher`. Otherwise, Sundial polls the provider using `WatchInterval`.
+External content is decoded as the application's configuration type before publication. A failed reload keeps the last valid snapshot and is reported through `WithOnError`.
 
 ## Configuration formats
 
-JSON is the default and requires no configuration. Use the provided YAML codec when the source stores YAML:
+JSON is the default. Use the provided YAML codec when the source stores YAML:
 
 ```go
 import yamlcodec "github.com/sundayfun/sundial/codec/yaml"
 
-config, err := sundial.New(ctx, sundial.Options{
-	Provider: source,
-	Codec:    yamlcodec.New(),
-})
+configStore, err := sundial.New[Config](
+	ctx,
+	sundial.WithProvider(source),
+	sundial.WithCodec(yamlcodec.New()),
+)
 ```
 
-Custom formats can implement the `codec.Codec` interface.
+Custom formats can implement `codec.Codec`.
 
 ## Build a provider
 
-A provider loads and saves one complete configuration document:
+A Provider loads and saves one complete configuration document:
 
 ```go
 type Provider interface {
@@ -135,11 +155,12 @@ Concrete storage implementations live under `provider/<source>`. The core packag
 
 ## Behavior
 
-- Configuration paths use dot notation, such as `server.port`.
-- A failed write leaves the current in-memory snapshot unchanged.
+- A missing document starts with the zero value of the application's configuration type.
+- `Get` returns a detached configuration; maps, slices, and pointers are not shared with the snapshot.
+- A failed `Put` leaves the current in-memory snapshot unchanged.
 - A failed reload keeps the last valid snapshot.
-- Writes on the same instance are serialized; reads are safe to use concurrently.
-- Concurrent writers across multiple instances use last-write-wins semantics.
+- `Put` calls on the same instance are serialized; `Get` is safe to use concurrently.
+- Concurrent `Put` calls use last-write-wins semantics, including calls from the same instance.
 
 ## Development
 
