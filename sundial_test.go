@@ -65,7 +65,7 @@ func TestNewLoadsTypedConfigurationIntoMemory(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	config, err := configStore.Get()
+	config, _, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -83,7 +83,7 @@ func TestNewLoadsTypedConfigurationIntoMemory(t *testing.T) {
 	}
 
 	for range 10 {
-		if _, getErr := configStore.Get(); getErr != nil {
+		if _, _, getErr := configStore.Get(); getErr != nil {
 			t.Fatalf("Get() error = %v", getErr)
 		}
 	}
@@ -103,7 +103,7 @@ func TestMissingConfigurationStartsWithZeroValue(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	config, err := configStore.Get()
+	config, _, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -140,12 +140,12 @@ func TestCustomCodec(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	config, err := configStore.Get()
+	config, version, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
 	config.Enabled = false
-	if putErr := configStore.Put(context.Background(), config); putErr != nil {
+	if putErr := configStore.Put(context.Background(), config, version); putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
 	}
 	if !bytes.HasPrefix(provider.Data(), []byte(prefix)) {
@@ -166,7 +166,7 @@ func TestYAMLCodec(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	config, err := configStore.Get()
+	config, _, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -174,8 +174,12 @@ func TestYAMLCodec(t *testing.T) {
 		t.Fatalf("Get().Server.Port = %d, want 8080", config.Server.Port)
 	}
 
+	config, version, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 	config.Server.Port = 9090
-	if putErr := configStore.Put(context.Background(), config); putErr != nil {
+	if putErr := configStore.Put(context.Background(), config, version); putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
 	}
 	if !bytes.Contains(provider.Data(), []byte("port: 9090")) {
@@ -198,12 +202,12 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	config, err := configStore.Get()
+	config, version, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
 	config.Server.Port = 9090
-	if putErr := configStore.Put(context.Background(), config); putErr != nil {
+	if putErr := configStore.Put(context.Background(), config, version); putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
 	}
 
@@ -225,7 +229,7 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload New() error = %v", err)
 	}
-	reloadedConfig, err := reloaded.Get()
+	reloadedConfig, _, err := reloaded.Get()
 	if err != nil {
 		t.Fatalf("reload Get() error = %v", err)
 	}
@@ -246,17 +250,17 @@ func TestSaveFailureKeepsPreviousMemory(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	config, err := configStore.Get()
+	provider.SetSaveError(errors.New("save failed"))
+	config, version, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
 	config.Server.Port = 9090
-	provider.SetSaveError(errors.New("save failed"))
-	if putErr := configStore.Put(context.Background(), config); putErr == nil {
+	if putErr := configStore.Put(context.Background(), config, version); putErr == nil {
 		t.Fatal("Put() error = nil, want failure")
 	}
 
-	current, err := configStore.Get()
+	current, _, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() after failed Put error = %v", err)
 	}
@@ -281,7 +285,7 @@ func TestReloadFailureKeepsPreviousMemory(t *testing.T) {
 	if reloadErr := configStore.Reload(context.Background()); reloadErr == nil {
 		t.Fatal("Reload() error = nil, want decode failure")
 	}
-	config, err := configStore.Get()
+	config, _, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -305,7 +309,7 @@ func TestGetReturnsDetachedConfiguration(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	config, err := configStore.Get()
+	config, _, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -313,7 +317,7 @@ func TestGetReturnsDetachedConfiguration(t *testing.T) {
 	config.Server.TLS.Enabled = false
 	config.Labels["region"] = "west"
 
-	current, err := configStore.Get()
+	current, _, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("second Get() error = %v", err)
 	}
@@ -356,7 +360,7 @@ func TestWatchPollingReloadsExternalChanges(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Watch did not report external change")
 	}
-	config, err := configStore.Get()
+	config, _, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -397,7 +401,7 @@ func TestNativeWatchReloadsExternalChanges(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("native Watch did not report external change")
 	}
-	config, err := configStore.Get()
+	config, _, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -408,6 +412,161 @@ func TestNativeWatchReloadsExternalChanges(t *testing.T) {
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Watch() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestPutRejectsStaleVersionWithinInstance(t *testing.T) {
+	t.Parallel()
+
+	provider := providertesting.New([]byte(`{"counter":0,"enabled":false}`))
+	configStore, err := sundial.New[testConfig](context.Background(), provider)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	first, firstVersion, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("first Get() error = %v", err)
+	}
+	stale, staleVersion, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("second Get() error = %v", err)
+	}
+
+	first.Counter = 1
+	if putErr := configStore.Put(context.Background(), first, firstVersion); putErr != nil {
+		t.Fatalf("first Put() error = %v", putErr)
+	}
+	stale.Enabled = true
+	if putErr := configStore.Put(context.Background(), stale, staleVersion); !errors.Is(putErr, sundial.ErrConflict) {
+		t.Fatalf("stale Put() error = %v, want ErrConflict", putErr)
+	}
+
+	current, _, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if current.Counter != 1 || current.Enabled {
+		t.Fatalf("configuration after conflict = %#v, want first write only", current)
+	}
+}
+
+func TestPutRejectsStaleVersionAcrossInstancesAndAllowsRetry(t *testing.T) {
+	t.Parallel()
+
+	provider := providertesting.New([]byte(`{"counter":0,"enabled":false}`))
+	firstStore, err := sundial.New[testConfig](context.Background(), provider)
+	if err != nil {
+		t.Fatalf("first New() error = %v", err)
+	}
+	secondStore, err := sundial.New[testConfig](context.Background(), provider)
+	if err != nil {
+		t.Fatalf("second New() error = %v", err)
+	}
+
+	first, firstVersion, err := firstStore.Get()
+	if err != nil {
+		t.Fatalf("first Get() error = %v", err)
+	}
+	second, secondVersion, err := secondStore.Get()
+	if err != nil {
+		t.Fatalf("second Get() error = %v", err)
+	}
+
+	first.Counter = 1
+	if putErr := firstStore.Put(context.Background(), first, firstVersion); putErr != nil {
+		t.Fatalf("first Put() error = %v", putErr)
+	}
+	second.Enabled = true
+	if putErr := secondStore.Put(context.Background(), second, secondVersion); !errors.Is(putErr, sundial.ErrConflict) {
+		t.Fatalf("stale Put() error = %v, want ErrConflict", putErr)
+	}
+
+	if reloadErr := secondStore.Reload(context.Background()); reloadErr != nil {
+		t.Fatalf("Reload() error = %v", reloadErr)
+	}
+	second, secondVersion, err = secondStore.Get()
+	if err != nil {
+		t.Fatalf("retry Get() error = %v", err)
+	}
+	second.Enabled = true
+	if putErr := secondStore.Put(context.Background(), second, secondVersion); putErr != nil {
+		t.Fatalf("retry Put() error = %v", putErr)
+	}
+
+	var saved testConfig
+	if decodeErr := json.Unmarshal(provider.Data(), &saved); decodeErr != nil {
+		t.Fatalf("decode saved configuration: %v", decodeErr)
+	}
+	if saved.Counter != 1 || !saved.Enabled {
+		t.Fatalf("configuration after retry = %#v, want both changes", saved)
+	}
+}
+
+func TestPutAllowsOnlyOneConcurrentCreate(t *testing.T) {
+	t.Parallel()
+
+	provider := providertesting.New(nil)
+	firstStore, err := sundial.New[testConfig](context.Background(), provider)
+	if err != nil {
+		t.Fatalf("first New() error = %v", err)
+	}
+	secondStore, err := sundial.New[testConfig](context.Background(), provider)
+	if err != nil {
+		t.Fatalf("second New() error = %v", err)
+	}
+
+	first, firstVersion, err := firstStore.Get()
+	if err != nil {
+		t.Fatalf("first Get() error = %v", err)
+	}
+	second, secondVersion, err := secondStore.Get()
+	if err != nil {
+		t.Fatalf("second Get() error = %v", err)
+	}
+
+	first.Counter = 1
+	if putErr := firstStore.Put(context.Background(), first, firstVersion); putErr != nil {
+		t.Fatalf("first Put() error = %v", putErr)
+	}
+	second.Enabled = true
+	if putErr := secondStore.Put(context.Background(), second, secondVersion); !errors.Is(putErr, sundial.ErrConflict) {
+		t.Fatalf("second Put() error = %v, want ErrConflict", putErr)
+	}
+
+	var saved testConfig
+	if decodeErr := json.Unmarshal(provider.Data(), &saved); decodeErr != nil {
+		t.Fatalf("decode saved configuration: %v", decodeErr)
+	}
+	if saved.Counter != 1 || saved.Enabled {
+		t.Fatalf("saved configuration = %#v, want first write only", saved)
+	}
+}
+
+func TestReloadTracksChangedProviderVersionWhenContentIsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`{"enabled":true}`)
+	provider := providertesting.New(data)
+	configStore, err := sundial.New[testConfig](context.Background(), provider)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	provider.SetData(data)
+	if reloadErr := configStore.Reload(context.Background()); reloadErr != nil {
+		t.Fatalf("Reload() error = %v", reloadErr)
+	}
+	config, version, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	config.Enabled = false
+	if putErr := configStore.Put(context.Background(), config, version); putErr != nil {
+		t.Fatalf("Put() error = %v", putErr)
+	}
+	if got := provider.SaveCount(); got != 1 {
+		t.Fatalf("SaveCount() = %d, want 1 without a stale-version retry", got)
 	}
 }
 
@@ -428,19 +587,26 @@ func TestConcurrentReadsAndWrites(t *testing.T) {
 		group.Add(2)
 		go func(value int) {
 			defer group.Done()
-			config, getErr := configStore.Get()
-			if getErr != nil {
-				t.Errorf("Get() error = %v", getErr)
+			for {
+				config, version, getErr := configStore.Get()
+				if getErr != nil {
+					t.Errorf("Get() error = %v", getErr)
+					return
+				}
+				config.Counter = value
+				putErr := configStore.Put(context.Background(), config, version)
+				if errors.Is(putErr, sundial.ErrConflict) {
+					continue
+				}
+				if putErr != nil {
+					t.Errorf("Put() error = %v", putErr)
+				}
 				return
-			}
-			config.Counter = value
-			if putErr := configStore.Put(context.Background(), config); putErr != nil {
-				t.Errorf("Put() error = %v", putErr)
 			}
 		}(i)
 		go func() {
 			defer group.Done()
-			if _, getErr := configStore.Get(); getErr != nil {
+			if _, _, getErr := configStore.Get(); getErr != nil {
 				t.Errorf("Get() error = %v", getErr)
 			}
 		}()

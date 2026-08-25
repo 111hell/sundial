@@ -3,7 +3,6 @@ package sundial
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 )
 
@@ -68,18 +67,15 @@ func (s *Sundial[T]) reload(ctx context.Context) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	data, err := s.provider.Load(ctx)
-	if errors.Is(err, ErrNotFound) {
-		data = nil
-	} else if err != nil {
-		return false, fmt.Errorf("sundial: load configuration: %w", err)
-	}
-
-	next, err := decodeSnapshot[T](s.codec, data)
+	next, err := s.loadSnapshot(ctx)
 	if err != nil {
 		return false, err
 	}
-	if next.hash == s.snapshot.Load().hash {
+	current := s.snapshot.Load()
+	if next.hash == current.hash {
+		if next.version != current.version {
+			s.snapshot.Store(next)
+		}
 		return false, nil
 	}
 

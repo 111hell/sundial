@@ -4,6 +4,7 @@ package providertesting
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 
 	"github.com/sundayfun/sundial"
@@ -18,43 +19,56 @@ type Provider struct {
 	saveErr   error
 	loadCount int
 	saveCount int
+	revision  uint64
 }
 
 // New creates a Provider. A nil document represents a missing configuration.
 func New(data []byte) *Provider {
-	return &Provider{
+	provider := &Provider{
 		data:   cloneBytes(data),
 		exists: data != nil,
 	}
+	if data != nil {
+		provider.revision = 1
+	}
+	return provider
 }
 
 // Load returns the current test document.
-func (p *Provider) Load(context.Context) ([]byte, error) {
+func (p *Provider) Load(context.Context) ([]byte, sundial.Version, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.loadCount++
 	if p.loadErr != nil {
-		return nil, p.loadErr
+		return nil, "", p.loadErr
 	}
 	if !p.exists {
-		return nil, sundial.ErrNotFound
+		return nil, "", sundial.ErrNotFound
 	}
-	return cloneBytes(p.data), nil
+	return cloneBytes(p.data), p.currentVersion(), nil
 }
 
-// Save replaces the current test document.
-func (p *Provider) Save(_ context.Context, data []byte) error {
+// Save replaces the current test document when expectedVersion is current.
+func (p *Provider) Save(
+	_ context.Context,
+	data []byte,
+	expectedVersion sundial.Version,
+) (sundial.Version, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.saveCount++
 	if p.saveErr != nil {
-		return p.saveErr
+		return "", p.saveErr
 	}
+	if expectedVersion != p.currentVersion() {
+		return "", sundial.ErrConflict
+	}
+	p.revision++
 	p.data = cloneBytes(data)
 	p.exists = true
-	return nil
+	return p.currentVersion(), nil
 }
 
 // SetData simulates an external configuration change.
@@ -62,6 +76,7 @@ func (p *Provider) SetData(data []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	p.revision++
 	p.data = cloneBytes(data)
 	p.exists = data != nil
 }
@@ -143,4 +158,11 @@ func (p *WatchProvider) Watch(ctx context.Context, notify func() error) error {
 
 func cloneBytes(data []byte) []byte {
 	return append([]byte(nil), data...)
+}
+
+func (p *Provider) currentVersion() sundial.Version {
+	if !p.exists {
+		return ""
+	}
+	return sundial.Version(strconv.FormatUint(p.revision, 10))
 }
