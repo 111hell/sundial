@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
@@ -24,9 +25,17 @@ type Config struct {
 	Key string
 	// Endpoint optionally overrides the standard AWS S3 endpoint.
 	Endpoint string
+	// WatchInterval controls how often Watch checks the object ETag.
+	// The default is 30 seconds.
+	WatchInterval time.Duration
 }
 
 type s3Client interface {
+	HeadObject(
+		ctx context.Context,
+		params *awss3.HeadObjectInput,
+		optFns ...func(*awss3.Options),
+	) (*awss3.HeadObjectOutput, error)
 	GetObject(
 		ctx context.Context,
 		params *awss3.GetObjectInput,
@@ -41,13 +50,15 @@ type s3Client interface {
 
 // Provider stores one complete configuration document in an S3 object.
 type Provider struct {
-	client s3Client
-	bucket string
-	key    string
+	client        s3Client
+	bucket        string
+	key           string
+	watchInterval time.Duration
 }
 
 var (
 	_ sundial.Provider = (*Provider)(nil)
+	_ sundial.Watcher  = (*Provider)(nil)
 	_ s3Client         = (*awss3.Client)(nil)
 )
 
@@ -58,6 +69,12 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 	}
 	if cfg.Key == "" {
 		return nil, ErrKeyRequired
+	}
+	if cfg.WatchInterval < 0 {
+		return nil, ErrWatchIntervalInvalid
+	}
+	if cfg.WatchInterval == 0 {
+		cfg.WatchInterval = defaultWatchInterval
 	}
 
 	loadOptions := make([]func(*awsconfig.LoadOptions) error, 0, 1)
@@ -79,9 +96,10 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 
 func newProvider(client s3Client, cfg Config) *Provider {
 	return &Provider{
-		client: client,
-		bucket: cfg.Bucket,
-		key:    cfg.Key,
+		client:        client,
+		bucket:        cfg.Bucket,
+		key:           cfg.Key,
+		watchInterval: cfg.WatchInterval,
 	}
 }
 
@@ -94,8 +112,9 @@ func (p *Provider) Load(ctx context.Context) ([]byte, sundial.Metadata, error) {
 	if err != nil {
 		if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 			switch apiErr.ErrorCode() {
-			case "NoSuchKey", "NotFound":
-				return nil, sundial.Metadata{}, sundial.ErrNotFound
+			case "NoSuchKey", "NotFound": //nolint:goconst // Keep AWS codes beside their mapping.
+				return nil, sundial.Metadata{},
+					fmt.Errorf("s3: get object: %w: %w", sundial.ErrNotFound, err)
 			}
 		}
 		return nil, sundial.Metadata{}, fmt.Errorf("s3: get object: %w", err)
@@ -135,10 +154,12 @@ func (p *Provider) Save(
 		if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 			switch apiErr.ErrorCode() {
 			case "PreconditionFailed", "ConditionalRequestConflict":
-				return sundial.Metadata{}, sundial.ErrConflict
+				return sundial.Metadata{},
+					fmt.Errorf("s3: put object: %w: %w", sundial.ErrConflict, err)
 			case "NoSuchKey", "NotFound":
 				if expectedMetadata.Revision != "" {
-					return sundial.Metadata{}, sundial.ErrConflict
+					return sundial.Metadata{},
+						fmt.Errorf("s3: put object: %w: %w", sundial.ErrConflict, err)
 				}
 			}
 		}

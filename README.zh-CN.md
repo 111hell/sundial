@@ -134,6 +134,10 @@ go func() {
 
 Provider 可以通过实现 `Watcher` 提供原生变化通知；否则 Sundial 默认每 30 秒轮询一次 Provider，可通过 `WithWatchInterval` 修改间隔。
 
+S3 Provider 通过轮询对象元数据实现 `Watcher`：按照
+`Config.WatchInterval` 调用 `HeadObject`；完成启动同步后，仅在 ETag
+发生变化时下载对象。该间隔默认为 30 秒。
+
 外部内容必须成功解码为应用的配置类型后才会发布。重新加载失败时保留上一份有效快照，并通过 `WithOnError` 报告错误。
 
 ## 配置格式

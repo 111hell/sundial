@@ -135,6 +135,10 @@ go func() {
 
 Providers may implement native change notifications through `Watcher`. Otherwise, Sundial polls the Provider every 30 seconds by default; use `WithWatchInterval` to change the interval.
 
+The S3 Provider implements `Watcher` by polling object metadata. It calls
+`HeadObject` on its `Config.WatchInterval`; after startup synchronization, it
+downloads the object only when the ETag changes. The interval defaults to 30 seconds.
+
 External content is decoded as the application's configuration type before publication. A failed reload keeps the last valid snapshot and is reported through `WithOnError`.
 
 ## Configuration formats

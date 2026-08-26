@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
@@ -13,11 +14,27 @@ import (
 )
 
 type testClient struct {
-	getOutput *awss3.GetObjectOutput
-	getErr    error
-	putOutput *awss3.PutObjectOutput
-	putErr    error
-	putInput  *awss3.PutObjectInput
+	headOutput *awss3.HeadObjectOutput
+	headErr    error
+	headInput  *awss3.HeadObjectInput
+	head       func(context.Context, *awss3.HeadObjectInput) (*awss3.HeadObjectOutput, error)
+	getOutput  *awss3.GetObjectOutput
+	getErr     error
+	putOutput  *awss3.PutObjectOutput
+	putErr     error
+	putInput   *awss3.PutObjectInput
+}
+
+func (c *testClient) HeadObject(
+	ctx context.Context,
+	input *awss3.HeadObjectInput,
+	_ ...func(*awss3.Options),
+) (*awss3.HeadObjectOutput, error) {
+	c.headInput = input
+	if c.head != nil {
+		return c.head(ctx, input)
+	}
+	return c.headOutput, c.headErr
 }
 
 func (c *testClient) GetObject(
@@ -60,6 +77,22 @@ func TestNewCreatesAWSClientFromConfig(t *testing.T) {
 	}
 	if options.BaseEndpoint == nil || *options.BaseEndpoint != "https://s3.example.com" {
 		t.Fatalf("New() client endpoint = %v, want https://s3.example.com", options.BaseEndpoint)
+	}
+	if provider.watchInterval != defaultWatchInterval {
+		t.Fatalf("New() watch interval = %v, want %v", provider.watchInterval, defaultWatchInterval)
+	}
+}
+
+func TestNewRejectsNegativeWatchInterval(t *testing.T) {
+	t.Parallel()
+
+	_, err := New(context.Background(), Config{
+		Bucket:        "configs",
+		Key:           "app.json",
+		WatchInterval: -time.Second,
+	})
+	if !errors.Is(err, ErrWatchIntervalInvalid) {
+		t.Fatalf("New() error = %v, want ErrWatchIntervalInvalid", err)
 	}
 }
 
@@ -116,6 +149,9 @@ func TestLoadMapsMissingObject(t *testing.T) {
 	_, _, err := provider.Load(context.Background())
 	if !errors.Is(err, sundial.ErrNotFound) {
 		t.Fatalf("Load() error = %v, want ErrNotFound", err)
+	}
+	if !errors.Is(err, backendErr) {
+		t.Fatalf("Load() error = %v, want wrapped backend error", err)
 	}
 }
 
@@ -192,12 +228,16 @@ func TestSaveMapsConditionalFailure(t *testing.T) {
 	if !errors.Is(err, sundial.ErrConflict) {
 		t.Fatalf("Save() error = %v, want ErrConflict", err)
 	}
+	if !errors.Is(err, backendErr) {
+		t.Fatalf("Save() error = %v, want wrapped backend error", err)
+	}
 }
 
 func TestSaveMapsDeletedObjectAsConflict(t *testing.T) {
 	t.Parallel()
 
-	client := &testClient{putErr: &smithy.GenericAPIError{Code: "NoSuchKey"}}
+	backendErr := &smithy.GenericAPIError{Code: "NoSuchKey"}
+	client := &testClient{putErr: backendErr}
 	provider := newProvider(client, Config{Bucket: "configs", Key: "app.json"})
 
 	_, err := provider.Save(
@@ -207,6 +247,9 @@ func TestSaveMapsDeletedObjectAsConflict(t *testing.T) {
 	)
 	if !errors.Is(err, sundial.ErrConflict) {
 		t.Fatalf("Save() error = %v, want ErrConflict", err)
+	}
+	if !errors.Is(err, backendErr) {
+		t.Fatalf("Save() error = %v, want wrapped backend error", err)
 	}
 }
 
