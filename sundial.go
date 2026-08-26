@@ -53,7 +53,7 @@ func (s *Sundial[T]) Get() (Entry[T], error) {
 	current := s.snapshot.Load()
 	config, err := decodeConfig[T](s.codec, current.data)
 	if err != nil {
-		return Entry[T]{Value: config, Metadata: Metadata{}},
+		return Entry[T]{Value: config, Metadata: Metadata{Revision: ""}},
 			fmt.Errorf("sundial: decode configuration: %w", err)
 	}
 	return Entry[T]{Value: config, Metadata: current.metadata}, nil
@@ -69,7 +69,7 @@ func (s *Sundial[T]) Put(ctx context.Context, entry Entry[T]) error {
 	if err != nil {
 		return fmt.Errorf("sundial: encode configuration: %w", err)
 	}
-	next, err := decodeSnapshot[T](s.codec, data, Metadata{})
+	next, err := decodeSnapshot[T](s.codec, data, Metadata{Revision: ""})
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func (s *Sundial[T]) loadSnapshot(ctx context.Context) (*snapshot, error) {
 	data, metadata, err := s.provider.Load(ctx)
 	if errors.Is(err, ErrNotFound) {
 		data = nil
-		metadata = Metadata{}
+		metadata = Metadata{Revision: ""}
 	} else if err != nil {
 		return nil, fmt.Errorf("sundial: load configuration: %w", err)
 	}
