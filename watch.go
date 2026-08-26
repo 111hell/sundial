@@ -73,7 +73,7 @@ func (s *Sundial[T]) reload(ctx context.Context) (bool, error) {
 	}
 	current := s.snapshot.Load()
 	if next.hash == current.hash {
-		if next.revision != current.revision {
+		if next.metadata.Revision != current.metadata.Revision {
 			s.snapshot.Store(next)
 		}
 		return false, nil

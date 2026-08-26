@@ -21,11 +21,11 @@ type Sundial[T any] struct {
 	snapshot atomic.Pointer[snapshot]
 }
 
-// Entry pairs a detached configuration value with the Provider revision from
+// Entry pairs a detached configuration value with the Provider metadata from
 // the same in-memory snapshot.
 type Entry[T any] struct {
 	Value    T
-	Revision Revision
+	Metadata Metadata
 }
 
 // New creates a Sundial instance backed by provider and loads its initial configuration.
@@ -53,13 +53,13 @@ func (s *Sundial[T]) Get() (Entry[T], error) {
 	current := s.snapshot.Load()
 	config, err := decodeConfig[T](s.codec, current.data)
 	if err != nil {
-		return Entry[T]{Value: config, Revision: ""},
+		return Entry[T]{Value: config, Metadata: Metadata{}},
 			fmt.Errorf("sundial: decode configuration: %w", err)
 	}
-	return Entry[T]{Value: config, Revision: current.revision}, nil
+	return Entry[T]{Value: config, Metadata: current.metadata}, nil
 }
 
-// Put saves entry when its revision is current, then updates memory.
+// Put saves entry when its metadata revision is current, then updates memory.
 // A stale revision returns ErrConflict.
 func (s *Sundial[T]) Put(ctx context.Context, entry Entry[T]) error {
 	s.writeMu.Lock()
@@ -69,28 +69,28 @@ func (s *Sundial[T]) Put(ctx context.Context, entry Entry[T]) error {
 	if err != nil {
 		return fmt.Errorf("sundial: encode configuration: %w", err)
 	}
-	next, err := decodeSnapshot[T](s.codec, data, "")
+	next, err := decodeSnapshot[T](s.codec, data, Metadata{})
 	if err != nil {
 		return err
 	}
-	revision, err := s.provider.Save(ctx, data, entry.Revision)
+	metadata, err := s.provider.Save(ctx, data, entry.Metadata)
 	if err != nil {
 		return fmt.Errorf("sundial: save configuration: %w", err)
 	}
 
-	next.revision = revision
+	next.metadata = metadata
 	s.snapshot.Store(next)
 	return nil
 }
 
 func (s *Sundial[T]) loadSnapshot(ctx context.Context) (*snapshot, error) {
-	data, revision, err := s.provider.Load(ctx)
+	data, metadata, err := s.provider.Load(ctx)
 	if errors.Is(err, ErrNotFound) {
 		data = nil
-		revision = ""
+		metadata = Metadata{}
 	} else if err != nil {
 		return nil, fmt.Errorf("sundial: load configuration: %w", err)
 	}
 
-	return decodeSnapshot[T](s.codec, data, revision)
+	return decodeSnapshot[T](s.codec, data, metadata)
 }
