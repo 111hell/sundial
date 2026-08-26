@@ -21,6 +21,13 @@ type Sundial[T any] struct {
 	snapshot atomic.Pointer[snapshot]
 }
 
+// Entry pairs a detached configuration value with the Provider revision from
+// the same in-memory snapshot.
+type Entry[T any] struct {
+	Value    T
+	Revision Revision
+}
+
 // New creates a Sundial instance backed by provider and loads its initial configuration.
 // A missing configuration document starts with the zero value of T.
 func New[T any](ctx context.Context, provider Provider, opts ...Option) (*Sundial[T], error) {
@@ -41,24 +48,24 @@ func New[T any](ctx context.Context, provider Provider, opts ...Option) (*Sundia
 	return s, nil
 }
 
-// Get returns a detached copy of the complete in-memory configuration and its
-// Provider version.
-func (s *Sundial[T]) Get() (T, Version, error) {
+// Get returns the current detached Entry from memory.
+func (s *Sundial[T]) Get() (Entry[T], error) {
 	current := s.snapshot.Load()
 	config, err := decodeConfig[T](s.codec, current.data)
 	if err != nil {
-		return config, "", fmt.Errorf("sundial: decode configuration: %w", err)
+		return Entry[T]{Value: config, Revision: ""},
+			fmt.Errorf("sundial: decode configuration: %w", err)
 	}
-	return config, current.version, nil
+	return Entry[T]{Value: config, Revision: current.revision}, nil
 }
 
-// Put conditionally persists config and then publishes it to memory. A stale
-// expectedVersion returns ErrConflict; failed saves leave memory unchanged.
-func (s *Sundial[T]) Put(ctx context.Context, config T, expectedVersion Version) error {
+// Put saves entry when its revision is current, then updates memory.
+// A stale revision returns ErrConflict.
+func (s *Sundial[T]) Put(ctx context.Context, entry Entry[T]) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	data, err := s.codec.Encode(config)
+	data, err := s.codec.Encode(entry.Value)
 	if err != nil {
 		return fmt.Errorf("sundial: encode configuration: %w", err)
 	}
@@ -66,24 +73,24 @@ func (s *Sundial[T]) Put(ctx context.Context, config T, expectedVersion Version)
 	if err != nil {
 		return err
 	}
-	version, err := s.provider.Save(ctx, data, expectedVersion)
+	revision, err := s.provider.Save(ctx, data, entry.Revision)
 	if err != nil {
 		return fmt.Errorf("sundial: save configuration: %w", err)
 	}
 
-	next.version = version
+	next.revision = revision
 	s.snapshot.Store(next)
 	return nil
 }
 
 func (s *Sundial[T]) loadSnapshot(ctx context.Context) (*snapshot, error) {
-	data, version, err := s.provider.Load(ctx)
+	data, revision, err := s.provider.Load(ctx)
 	if errors.Is(err, ErrNotFound) {
 		data = nil
-		version = ""
+		revision = ""
 	} else if err != nil {
 		return nil, fmt.Errorf("sundial: load configuration: %w", err)
 	}
 
-	return decodeSnapshot[T](s.codec, data, version)
+	return decodeSnapshot[T](s.codec, data, revision)
 }

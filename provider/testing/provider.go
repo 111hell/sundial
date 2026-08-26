@@ -35,7 +35,7 @@ func New(data []byte) *Provider {
 }
 
 // Load returns the current test document.
-func (p *Provider) Load(context.Context) ([]byte, sundial.Version, error) {
+func (p *Provider) Load(context.Context) ([]byte, sundial.Revision, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -46,15 +46,15 @@ func (p *Provider) Load(context.Context) ([]byte, sundial.Version, error) {
 	if !p.exists {
 		return nil, "", sundial.ErrNotFound
 	}
-	return cloneBytes(p.data), p.currentVersion(), nil
+	return cloneBytes(p.data), p.currentRevision(), nil
 }
 
-// Save replaces the current test document when expectedVersion is current.
+// Save replaces the current test document when expectedRevision is current.
 func (p *Provider) Save(
 	_ context.Context,
 	data []byte,
-	expectedVersion sundial.Version,
-) (sundial.Version, error) {
+	expectedRevision sundial.Revision,
+) (sundial.Revision, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -62,13 +62,13 @@ func (p *Provider) Save(
 	if p.saveErr != nil {
 		return "", p.saveErr
 	}
-	if expectedVersion != p.currentVersion() {
+	if expectedRevision != p.currentRevision() {
 		return "", sundial.ErrConflict
 	}
 	p.revision++
 	p.data = cloneBytes(data)
 	p.exists = true
-	return p.currentVersion(), nil
+	return p.currentRevision(), nil
 }
 
 // SetData simulates an external configuration change.
@@ -160,9 +160,9 @@ func cloneBytes(data []byte) []byte {
 	return append([]byte(nil), data...)
 }
 
-func (p *Provider) currentVersion() sundial.Version {
+func (p *Provider) currentRevision() sundial.Revision {
 	if !p.exists {
 		return ""
 	}
-	return sundial.Version(strconv.FormatUint(p.revision, 10))
+	return sundial.Revision(strconv.FormatUint(p.revision, 10))
 }

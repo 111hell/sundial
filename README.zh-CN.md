@@ -34,14 +34,14 @@ type Config struct {
 }
 ```
 
-使用 Provider 创建实例，其他可选行为通过 functional options 配置。`New` 会加载并验证初始配置：
+使用已初始化的 `Provider` 创建 Sundial。`New` 会加载并验证初始配置：
 
 ```go
 ctx := context.Background()
 
 configStore, err := sundial.New[Config](
 	ctx,
-	source,
+	provider,
 )
 if err != nil {
 	log.Fatal(err)
@@ -50,33 +50,32 @@ if err != nil {
 
 ### 读取
 
-`Get` 从内存返回独立的强类型副本，不会访问 Provider：
+`Get` 从内存返回 `Entry`，不会访问 Provider。`Value` 是独立副本，`Revision`
+来自同一快照：
 
 ```go
-config, _, err := configStore.Get()
+entry, err := configStore.Get()
 if err != nil {
 	log.Fatal(err)
 }
 
-fmt.Println(config.Server.Port)
+fmt.Println(entry.Value.Server.Port)
 ```
-
-修改返回值不会改变 Sundial 的内存状态；`Get` 还会返回与配置对应的 Provider 版本。
 
 ### 写入
 
-读取当前版本、修改配置，然后有条件地持久化完整文档：
+修改 `entry.Value`，然后将 `Entry` 传回 `Put` 进行条件写入：
 
 ```go
-config, version, err := configStore.Get()
+entry, err := configStore.Get()
 if err != nil {
 	log.Fatal(err)
 }
 
-config.Server.Port = 9090
-if err := configStore.Put(ctx, config, version); err != nil {
+entry.Value.Server.Port = 9090
+if err := configStore.Put(ctx, entry); err != nil {
 	if errors.Is(err, sundial.ErrConflict) {
-		// 重新加载、读取新版本、应用本次修改，然后按需重试。
+		// 重新加载、读取新 revision、应用本次修改，然后按需重试。
 		log.Print("保存前配置已发生变化")
 		return
 	}
@@ -84,9 +83,8 @@ if err := configStore.Put(ctx, config, version); err != nil {
 }
 ```
 
-`Version` 是不透明的：应用代码只需将 `Get` 返回的值原样传给 `Put`。如果其他写入先
-成功，`Put` 返回 `ErrConflict`，不会自动合并或重试。Provider 保存成功后，Sundial
-才会发布新的内存快照。
+`Put` 使用 `entry.Revision`；如果其他写入先成功，则返回 `ErrConflict`。它不会
+自动合并或重试。
 
 ## 监听变化
 
@@ -97,12 +95,12 @@ go func() {
 	err := configStore.Watch(
 		ctx,
 		sundial.WithOnChange(func() {
-			config, _, err := configStore.Get()
+			entry, err := configStore.Get()
 			if err != nil {
 				log.Printf("读取配置失败: %v", err)
 				return
 			}
-			log.Printf("配置已更新: port=%d", config.Server.Port)
+			log.Printf("配置已更新: port=%d", entry.Value.Server.Port)
 		}),
 		sundial.WithOnError(func(err error) {
 			log.Printf("监听错误: %v", err)
@@ -127,7 +125,7 @@ import yamlcodec "github.com/sundayfun/sundial/codec/yaml"
 
 configStore, err := sundial.New[Config](
 	ctx,
-	source,
+	provider,
 	sundial.WithCodec(yamlcodec.New()),
 )
 ```
@@ -136,22 +134,18 @@ configStore, err := sundial.New[Config](
 
 ## 实现 Provider
 
-Provider 负责加载和有条件地保存一份完整配置文档：
+Provider 负责加载并有条件地保存一份完整配置：
 
 ```go
 type Provider interface {
-	Load(ctx context.Context) ([]byte, Version, error)
-	Save(ctx context.Context, data []byte, expectedVersion Version) (Version, error)
+	Load(ctx context.Context) ([]byte, Revision, error)
+	Save(ctx context.Context, data []byte, expectedRevision Revision) (Revision, error)
 }
 ```
 
-`Version` 是由 Provider 生成的不透明条件写 Token。它只用于相等比较，不要求有序，
-也不要求每次写入都生成唯一值；零值版本表示文档不存在。应用写入方只需将该 Token 从
-`Get` 传给 `Put`，无需解析。
-
-`Load` 必须在同一次逻辑读取中返回数据及其版本。`Save` 必须原子比较
-`expectedVersion` 与当前版本，仅在匹配时替换文档，并返回与已保存数据对应的版本；
-不匹配时返回 `ErrConflict`。并发安全依赖 Provider 使用具体存储的原子能力正确实现该契约。
+`Load` 返回的数据和 `Revision` 必须对应同一配置状态。只有 `expectedRevision`
+与当前配置的 `Revision` 匹配时，`Save` 才能替换配置；否则返回 `ErrConflict`。Provider
+必须原子地完成这项检查。
 
 需要原生监听能力时，还可以实现：
 
@@ -171,11 +165,9 @@ type Watcher interface {
 ## 行为约定
 
 - 配置文档不存在时，从应用配置类型的零值开始。
-- `Get` 返回独立配置，map、slice 和 pointer 不会与内部快照共享。
 - `Put` 失败或发生冲突时，当前内存快照保持不变。
 - 重新加载失败时，保留上一份有效配置。
-- `Get` 支持并发调用；写入方将返回的版本传给 `Put`。
-- 同一实例的 `Put` 会串行执行；同一实例或不同实例的陈旧版本都会返回 `ErrConflict`。
+- `Get` 支持并发调用。同一实例的 `Put` 会串行执行，陈旧 `Revision` 会返回 `ErrConflict`。
 
 ## 开发
 
