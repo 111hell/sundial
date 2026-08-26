@@ -48,10 +48,30 @@ if err != nil {
 }
 ```
 
+### S3 Provider
+
+```go
+import s3provider "github.com/sundayfun/sundial/provider/s3"
+
+provider, err := s3provider.New(ctx, s3provider.Config{
+	Region: "us-east-1",
+	Bucket: "my-config-bucket",
+	Key:    "production/app.json",
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+configStore, err := sundial.New[Config](ctx, provider)
+if err != nil {
+	log.Fatal(err)
+}
+```
+
 ### 读取
 
-`Get` 从内存返回 `Entry`，不会访问 Provider。`Value` 是独立副本，`Revision`
-来自同一快照：
+`Get` 从内存返回 `Entry`，不会访问 Provider。`Value` 是独立副本，
+`Metadata.Revision` 来自同一快照：
 
 ```go
 entry, err := configStore.Get()
@@ -83,8 +103,8 @@ if err := configStore.Put(ctx, entry); err != nil {
 }
 ```
 
-`Put` 使用 `entry.Revision`；如果其他写入先成功，则返回 `ErrConflict`。它不会
-自动合并或重试。
+`Put` 使用 `entry.Metadata.Revision`；如果其他写入先成功，则返回
+`ErrConflict`。它不会自动合并或重试。
 
 ## 监听变化
 
@@ -138,14 +158,14 @@ Provider 负责加载并有条件地保存一份完整配置：
 
 ```go
 type Provider interface {
-	Load(ctx context.Context) ([]byte, Revision, error)
-	Save(ctx context.Context, data []byte, expectedRevision Revision) (Revision, error)
+	Load(ctx context.Context) ([]byte, Metadata, error)
+	Save(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
 }
 ```
 
-`Load` 返回的数据和 `Revision` 必须对应同一配置状态。只有 `expectedRevision`
-与当前配置的 `Revision` 匹配时，`Save` 才能替换配置；否则返回 `ErrConflict`。Provider
-必须原子地完成这项检查。
+`Load` 返回的数据和 `Metadata` 必须对应同一配置状态。只有
+`expectedMetadata.Revision` 与当前配置的 Revision 匹配时，`Save` 才能替换配置；
+否则返回 `ErrConflict`。Provider 必须原子地完成这项检查。
 
 需要原生监听能力时，还可以实现：
 

@@ -1,0 +1,151 @@
+// Package s3 provides a Sundial Provider backed by one standard S3 object.
+package s3
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
+	"github.com/sundayfun/sundial"
+)
+
+// Config identifies the S3 object that stores one configuration document.
+type Config struct {
+	// Region overrides the region resolved by the AWS SDK when non-empty.
+	Region string
+	// Bucket contains the configuration object.
+	Bucket string
+	// Key identifies the configuration object in Bucket.
+	Key string
+	// Endpoint optionally overrides the standard AWS S3 endpoint.
+	Endpoint string
+}
+
+type s3Client interface {
+	GetObject(
+		ctx context.Context,
+		params *awss3.GetObjectInput,
+		optFns ...func(*awss3.Options),
+	) (*awss3.GetObjectOutput, error)
+	PutObject(
+		ctx context.Context,
+		params *awss3.PutObjectInput,
+		optFns ...func(*awss3.Options),
+	) (*awss3.PutObjectOutput, error)
+}
+
+// Provider stores one complete configuration document in an S3 object.
+type Provider struct {
+	client s3Client
+	bucket string
+	key    string
+}
+
+var (
+	_ sundial.Provider = (*Provider)(nil)
+	_ s3Client         = (*awss3.Client)(nil)
+)
+
+// New creates an S3 Provider using the AWS SDK default configuration chain.
+func New(ctx context.Context, cfg Config) (*Provider, error) {
+	if cfg.Bucket == "" {
+		return nil, ErrBucketRequired
+	}
+	if cfg.Key == "" {
+		return nil, ErrKeyRequired
+	}
+
+	loadOptions := make([]func(*awsconfig.LoadOptions) error, 0, 1)
+	if cfg.Region != "" {
+		loadOptions = append(loadOptions, awsconfig.WithRegion(cfg.Region))
+	}
+	awsConfig, err := awsconfig.LoadDefaultConfig(ctx, loadOptions...)
+	if err != nil {
+		return nil, fmt.Errorf("s3: load AWS configuration: %w", err)
+	}
+
+	client := awss3.NewFromConfig(awsConfig, func(options *awss3.Options) {
+		if cfg.Endpoint != "" {
+			options.BaseEndpoint = &cfg.Endpoint
+		}
+	})
+	return newProvider(client, cfg), nil
+}
+
+func newProvider(client s3Client, cfg Config) *Provider {
+	return &Provider{
+		client: client,
+		bucket: cfg.Bucket,
+		key:    cfg.Key,
+	}
+}
+
+// Load reads the current object and uses its ETag as the revision.
+func (p *Provider) Load(ctx context.Context) ([]byte, sundial.Metadata, error) {
+	output, err := p.client.GetObject(ctx, &awss3.GetObjectInput{
+		Bucket: &p.bucket,
+		Key:    &p.key,
+	})
+	if err != nil {
+		if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
+			switch apiErr.ErrorCode() {
+			case "NoSuchKey", "NotFound":
+				return nil, sundial.Metadata{}, sundial.ErrNotFound
+			}
+		}
+		return nil, sundial.Metadata{}, fmt.Errorf("s3: get object: %w", err)
+	}
+	defer output.Body.Close()
+
+	data, err := io.ReadAll(output.Body)
+	if err != nil {
+		return nil, sundial.Metadata{}, fmt.Errorf("s3: read object: %w", err)
+	}
+	if output.ETag == nil || *output.ETag == "" {
+		return nil, sundial.Metadata{}, ErrEmptyETag
+	}
+	return data, sundial.Metadata{Revision: *output.ETag}, nil
+}
+
+// Save conditionally replaces the object and returns its new ETag.
+func (p *Provider) Save(
+	ctx context.Context,
+	data []byte,
+	expectedMetadata sundial.Metadata,
+) (sundial.Metadata, error) {
+	input := &awss3.PutObjectInput{
+		Body:   bytes.NewReader(data),
+		Bucket: &p.bucket,
+		Key:    &p.key,
+	}
+	if expectedMetadata.Revision == "" {
+		ifNoneMatch := "*"
+		input.IfNoneMatch = &ifNoneMatch
+	} else {
+		input.IfMatch = &expectedMetadata.Revision
+	}
+
+	output, err := p.client.PutObject(ctx, input)
+	if err != nil {
+		if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
+			switch apiErr.ErrorCode() {
+			case "PreconditionFailed", "ConditionalRequestConflict":
+				return sundial.Metadata{}, sundial.ErrConflict
+			case "NoSuchKey", "NotFound":
+				if expectedMetadata.Revision != "" {
+					return sundial.Metadata{}, sundial.ErrConflict
+				}
+			}
+		}
+		return sundial.Metadata{}, fmt.Errorf("s3: put object: %w", err)
+	}
+	if output.ETag == nil || *output.ETag == "" {
+		return sundial.Metadata{}, ErrEmptyETag
+	}
+	return sundial.Metadata{Revision: *output.ETag}, nil
+}

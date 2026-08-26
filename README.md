@@ -49,10 +49,30 @@ if err != nil {
 }
 ```
 
+### S3 provider
+
+```go
+import s3provider "github.com/sundayfun/sundial/provider/s3"
+
+provider, err := s3provider.New(ctx, s3provider.Config{
+	Region: "us-east-1",
+	Bucket: "my-config-bucket",
+	Key:    "production/app.json",
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+configStore, err := sundial.New[Config](ctx, provider)
+if err != nil {
+	log.Fatal(err)
+}
+```
+
 ### Read
 
 `Get` returns an `Entry` from memory without calling the Provider. Its `Value`
-is detached, and its `Revision` belongs to the same snapshot:
+is detached, and its `Metadata.Revision` belongs to the same snapshot:
 
 ```go
 entry, err := configStore.Get()
@@ -84,8 +104,8 @@ if err := configStore.Put(ctx, entry); err != nil {
 }
 ```
 
-`Put` uses `entry.Revision` and returns `ErrConflict` if another writer wins. It
-does not merge or retry automatically.
+`Put` uses `entry.Metadata.Revision` and returns `ErrConflict` if another writer
+wins. It does not merge or retry automatically.
 
 ## Watch for changes
 
@@ -139,15 +159,15 @@ A Provider loads and conditionally saves one complete configuration document:
 
 ```go
 type Provider interface {
-	Load(ctx context.Context) ([]byte, Revision, error)
-	Save(ctx context.Context, data []byte, expectedRevision Revision) (Revision, error)
+	Load(ctx context.Context) ([]byte, Metadata, error)
+	Save(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
 }
 ```
 
-The data and `Revision` returned by `Load` must belong to the same configuration
-state. `Save` must replace the configuration only when `expectedRevision`
-matches the current revision and return `ErrConflict` otherwise. The Provider
-must enforce this check atomically.
+The data and `Metadata` returned by `Load` must belong to the same configuration
+state. `Save` must replace the configuration only when
+`expectedMetadata.Revision` matches the current revision and return
+`ErrConflict` otherwise. The Provider must enforce this check atomically.
 
 For native change notifications, it can also implement:
 
