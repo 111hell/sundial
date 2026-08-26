@@ -8,21 +8,24 @@ import (
 	"github.com/sundayfun/sundial/codec"
 )
 
-// snapshot is one immutable encoded configuration version published for
-// concurrent reads. The hash detects source changes.
+// snapshot is one immutable encoded configuration state published for
+// concurrent reads. The hash tracks content and metadata tracks the Provider
+// state paired with the document.
 type snapshot struct {
-	data []byte
-	hash [sha256.Size]byte
+	data     []byte
+	hash     [sha256.Size]byte
+	metadata Metadata
 }
 
-func decodeSnapshot[T any](documentCodec codec.Codec, data []byte) (*snapshot, error) {
+func decodeSnapshot[T any](documentCodec codec.Codec, data []byte, metadata Metadata) (*snapshot, error) {
 	if _, err := decodeConfig[T](documentCodec, data); err != nil {
 		return nil, fmt.Errorf("sundial: decode configuration: %w", err)
 	}
 
 	return &snapshot{
-		data: cloneBytes(data),
-		hash: sha256.Sum256(data),
+		data:     cloneBytes(data),
+		hash:     sha256.Sum256(data),
+		metadata: metadata,
 	}, nil
 }
 

@@ -8,7 +8,7 @@ Sundial 是一个轻量、可扩展、类型安全的 Go 配置 SDK，提供内�
 
 - **类型安全访问**：应用直接读取自己定义的配置结构体，不再使用字符串路径和 `any`。
 - **快速读取**：`Get` 只读取内存快照。
-- **持久化写入**：`Put` 保存完整的强类型配置文档。
+- **持久化写入**：`Put` 有条件地保存完整的强类型配置文档。
 - **实时更新**：`Watch` 将外部变化同步到内存。
 - **存储和格式可扩展**：配置源实现 `Provider`；默认使用 JSON，其他格式通过 Codec 扩展。
 
@@ -34,14 +34,14 @@ type Config struct {
 }
 ```
 
-使用 Provider 创建实例，其他可选行为通过 functional options 配置。`New` 会加载并验证初始配置：
+使用已初始化的 `Provider` 创建 Sundial。`New` 会加载并验证初始配置：
 
 ```go
 ctx := context.Background()
 
 configStore, err := sundial.New[Config](
 	ctx,
-	source,
+	provider,
 )
 if err != nil {
 	log.Fatal(err)
@@ -50,36 +50,41 @@ if err != nil {
 
 ### 读取
 
-`Get` 从内存返回独立的强类型副本，不会访问 Provider：
+`Get` 从内存返回 `Entry`，不会访问 Provider。`Value` 是独立副本，`Revision`
+来自同一快照：
 
 ```go
-config, err := configStore.Get()
+entry, err := configStore.Get()
 if err != nil {
 	log.Fatal(err)
 }
 
-fmt.Println(config.Server.Port)
+fmt.Println(entry.Value.Server.Port)
 ```
-
-修改返回值不会改变 Sundial 的内存状态，只有 `Put` 成功后新配置才会生效。
 
 ### 写入
 
-修改强类型配置，然后持久化完整文档：
+修改 `entry.Value`，然后将 `Entry` 传回 `Put` 进行条件写入：
 
 ```go
-config, err := configStore.Get()
+entry, err := configStore.Get()
 if err != nil {
 	log.Fatal(err)
 }
 
-config.Server.Port = 9090
-if err := configStore.Put(ctx, config); err != nil {
+entry.Value.Server.Port = 9090
+if err := configStore.Put(ctx, entry); err != nil {
+	if errors.Is(err, sundial.ErrConflict) {
+		// 重新加载、读取新 revision、应用本次修改，然后按需重试。
+		log.Print("保存前配置已发生变化")
+		return
+	}
 	log.Fatal(err)
 }
 ```
 
-`Put` 先保存到 Provider，成功后才发布新的内存快照；保存失败时继续保留旧快照。
+`Put` 使用 `entry.Revision`；如果其他写入先成功，则返回 `ErrConflict`。它不会
+自动合并或重试。
 
 ## 监听变化
 
@@ -90,12 +95,12 @@ go func() {
 	err := configStore.Watch(
 		ctx,
 		sundial.WithOnChange(func() {
-			config, err := configStore.Get()
+			entry, err := configStore.Get()
 			if err != nil {
 				log.Printf("读取配置失败: %v", err)
 				return
 			}
-			log.Printf("配置已更新: port=%d", config.Server.Port)
+			log.Printf("配置已更新: port=%d", entry.Value.Server.Port)
 		}),
 		sundial.WithOnError(func(err error) {
 			log.Printf("监听错误: %v", err)
@@ -120,7 +125,7 @@ import yamlcodec "github.com/sundayfun/sundial/codec/yaml"
 
 configStore, err := sundial.New[Config](
 	ctx,
-	source,
+	provider,
 	sundial.WithCodec(yamlcodec.New()),
 )
 ```
@@ -129,14 +134,18 @@ configStore, err := sundial.New[Config](
 
 ## 实现 Provider
 
-Provider 负责加载和保存一份完整配置文档：
+Provider 负责加载并有条件地保存一份完整配置：
 
 ```go
 type Provider interface {
-	Load(ctx context.Context) ([]byte, error)
-	Save(ctx context.Context, data []byte) error
+	Load(ctx context.Context) ([]byte, Revision, error)
+	Save(ctx context.Context, data []byte, expectedRevision Revision) (Revision, error)
 }
 ```
+
+`Load` 返回的数据和 `Revision` 必须对应同一配置状态。只有 `expectedRevision`
+与当前配置的 `Revision` 匹配时，`Save` 才能替换配置；否则返回 `ErrConflict`。Provider
+必须原子地完成这项检查。
 
 需要原生监听能力时，还可以实现：
 
@@ -156,11 +165,9 @@ type Watcher interface {
 ## 行为约定
 
 - 配置文档不存在时，从应用配置类型的零值开始。
-- `Get` 返回独立配置，map、slice 和 pointer 不会与内部快照共享。
-- `Put` 失败时，当前内存快照保持不变。
+- `Put` 失败或发生冲突时，当前内存快照保持不变。
 - 重新加载失败时，保留上一份有效配置。
-- 同一实例的 `Put` 会串行执行，`Get` 支持并发调用。
-- 同一实例或不同实例的并发 `Put` 均采用 last-write-wins。
+- `Get` 支持并发调用。同一实例的 `Put` 会串行执行，陈旧 `Revision` 会返回 `ErrConflict`。
 
 ## 开发
 

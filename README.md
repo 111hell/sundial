@@ -8,7 +8,7 @@ Sundial is a lightweight, extensible, type-safe configuration SDK for Go with in
 
 - **Type-safe access** — applications read their own configuration struct instead of string paths and `any` values.
 - **Fast reads** — `Get` reads only from an in-memory snapshot.
-- **Persistent writes** — `Put` saves one complete typed configuration document.
+- **Persistent writes** — `Put` conditionally saves one complete typed configuration document.
 - **Live updates** — `Watch` keeps memory synchronized with external changes.
 - **Extensible storage and formats** — storage sources implement `Provider`; JSON works by default and other formats use codecs.
 
@@ -34,14 +34,15 @@ type Config struct {
 }
 ```
 
-Create an instance with a Provider. Optional behavior uses functional options. `New` loads and validates the initial document:
+Create a Sundial with an initialized `Provider`. `New` loads and validates the
+initial configuration:
 
 ```go
 ctx := context.Background()
 
 configStore, err := sundial.New[Config](
 	ctx,
-	source,
+	provider,
 )
 if err != nil {
 	log.Fatal(err)
@@ -50,36 +51,41 @@ if err != nil {
 
 ### Read
 
-`Get` returns a detached typed copy from memory and does not call the Provider:
+`Get` returns an `Entry` from memory without calling the Provider. Its `Value`
+is detached, and its `Revision` belongs to the same snapshot:
 
 ```go
-config, err := configStore.Get()
+entry, err := configStore.Get()
 if err != nil {
 	log.Fatal(err)
 }
 
-fmt.Println(config.Server.Port)
+fmt.Println(entry.Value.Server.Port)
 ```
-
-Changing the returned value does not change Sundial's in-memory state until `Put` succeeds.
 
 ### Write
 
-Modify the typed configuration and persist the complete document:
+Modify `entry.Value`, then pass the entry back to `Put` for a conditional save:
 
 ```go
-config, err := configStore.Get()
+entry, err := configStore.Get()
 if err != nil {
 	log.Fatal(err)
 }
 
-config.Server.Port = 9090
-if err := configStore.Put(ctx, config); err != nil {
+entry.Value.Server.Port = 9090
+if err := configStore.Put(ctx, entry); err != nil {
+	if errors.Is(err, sundial.ErrConflict) {
+		// Reload, read the new revision, reapply the change, and retry if appropriate.
+		log.Print("configuration changed before it could be saved")
+		return
+	}
 	log.Fatal(err)
 }
 ```
 
-`Put` saves to the Provider before publishing the new in-memory snapshot. A failed save leaves the previous snapshot unchanged.
+`Put` uses `entry.Revision` and returns `ErrConflict` if another writer wins. It
+does not merge or retry automatically.
 
 ## Watch for changes
 
@@ -90,12 +96,12 @@ go func() {
 	err := configStore.Watch(
 		ctx,
 		sundial.WithOnChange(func() {
-			config, err := configStore.Get()
+			entry, err := configStore.Get()
 			if err != nil {
 				log.Printf("read configuration: %v", err)
 				return
 			}
-			log.Printf("configuration updated: port=%d", config.Server.Port)
+			log.Printf("configuration updated: port=%d", entry.Value.Server.Port)
 		}),
 		sundial.WithOnError(func(err error) {
 			log.Printf("watch error: %v", err)
@@ -120,7 +126,7 @@ import yamlcodec "github.com/sundayfun/sundial/codec/yaml"
 
 configStore, err := sundial.New[Config](
 	ctx,
-	source,
+	provider,
 	sundial.WithCodec(yamlcodec.New()),
 )
 ```
@@ -129,14 +135,19 @@ Custom formats can implement `codec.Codec`.
 
 ## Build a provider
 
-A Provider loads and saves one complete configuration document:
+A Provider loads and conditionally saves one complete configuration document:
 
 ```go
 type Provider interface {
-	Load(ctx context.Context) ([]byte, error)
-	Save(ctx context.Context, data []byte) error
+	Load(ctx context.Context) ([]byte, Revision, error)
+	Save(ctx context.Context, data []byte, expectedRevision Revision) (Revision, error)
 }
 ```
+
+The data and `Revision` returned by `Load` must belong to the same configuration
+state. `Save` must replace the configuration only when `expectedRevision`
+matches the current revision and return `ErrConflict` otherwise. The Provider
+must enforce this check atomically.
 
 For native change notifications, it can also implement:
 
@@ -156,11 +167,9 @@ Concrete storage implementations live under `provider/<source>`. The core packag
 ## Behavior
 
 - A missing document starts with the zero value of the application's configuration type.
-- `Get` returns a detached configuration; maps, slices, and pointers are not shared with the snapshot.
-- A failed `Put` leaves the current in-memory snapshot unchanged.
+- A failed or conflicting `Put` leaves the current in-memory snapshot unchanged.
 - A failed reload keeps the last valid snapshot.
-- `Put` calls on the same instance are serialized; `Get` is safe to use concurrently.
-- Concurrent `Put` calls use last-write-wins semantics, including calls from the same instance.
+- `Get` is safe for concurrent use. `Put` calls are serialized per instance, and stale revisions return `ErrConflict`.
 
 ## Development
 

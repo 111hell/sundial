@@ -21,6 +21,13 @@ type Sundial[T any] struct {
 	snapshot atomic.Pointer[snapshot]
 }
 
+// Entry pairs a detached configuration value with the Provider metadata from
+// the same in-memory snapshot.
+type Entry[T any] struct {
+	Value    T
+	Metadata Metadata
+}
+
 // New creates a Sundial instance backed by provider and loads its initial configuration.
 // A missing configuration document starts with the zero value of T.
 func New[T any](ctx context.Context, provider Provider, opts ...Option) (*Sundial[T], error) {
@@ -33,14 +40,7 @@ func New[T any](ctx context.Context, provider Provider, opts ...Option) (*Sundia
 		snapshot:      atomic.Pointer[snapshot]{},
 	}
 
-	data, err := s.provider.Load(ctx)
-	if errors.Is(err, ErrNotFound) {
-		data = nil
-	} else if err != nil {
-		return nil, fmt.Errorf("sundial: load configuration: %w", err)
-	}
-
-	loaded, err := decodeSnapshot[T](s.codec, data)
+	loaded, err := s.loadSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -48,33 +48,49 @@ func New[T any](ctx context.Context, provider Provider, opts ...Option) (*Sundia
 	return s, nil
 }
 
-// Get returns a detached copy of the complete in-memory configuration.
-func (s *Sundial[T]) Get() (T, error) {
-	config, err := decodeConfig[T](s.codec, s.snapshot.Load().data)
+// Get returns the current detached Entry from memory.
+func (s *Sundial[T]) Get() (Entry[T], error) {
+	current := s.snapshot.Load()
+	config, err := decodeConfig[T](s.codec, current.data)
 	if err != nil {
-		return config, fmt.Errorf("sundial: decode configuration: %w", err)
+		return Entry[T]{Value: config, Metadata: Metadata{Revision: ""}},
+			fmt.Errorf("sundial: decode configuration: %w", err)
 	}
-	return config, nil
+	return Entry[T]{Value: config, Metadata: current.metadata}, nil
 }
 
-// Put persists a complete configuration document and then publishes it to
-// memory. A failed save leaves the current in-memory configuration unchanged.
-func (s *Sundial[T]) Put(ctx context.Context, config T) error {
+// Put saves entry when its metadata revision is current, then updates memory.
+// A stale revision returns ErrConflict.
+func (s *Sundial[T]) Put(ctx context.Context, entry Entry[T]) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	data, err := s.codec.Encode(config)
+	data, err := s.codec.Encode(entry.Value)
 	if err != nil {
 		return fmt.Errorf("sundial: encode configuration: %w", err)
 	}
-	next, err := decodeSnapshot[T](s.codec, data)
+	next, err := decodeSnapshot[T](s.codec, data, Metadata{Revision: ""})
 	if err != nil {
 		return err
 	}
-	if err := s.provider.Save(ctx, data); err != nil {
+	metadata, err := s.provider.Save(ctx, data, entry.Metadata)
+	if err != nil {
 		return fmt.Errorf("sundial: save configuration: %w", err)
 	}
 
+	next.metadata = metadata
 	s.snapshot.Store(next)
 	return nil
+}
+
+func (s *Sundial[T]) loadSnapshot(ctx context.Context) (*snapshot, error) {
+	data, metadata, err := s.provider.Load(ctx)
+	if errors.Is(err, ErrNotFound) {
+		data = nil
+		metadata = Metadata{Revision: ""}
+	} else if err != nil {
+		return nil, fmt.Errorf("sundial: load configuration: %w", err)
+	}
+
+	return decodeSnapshot[T](s.codec, data, metadata)
 }

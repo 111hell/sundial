@@ -2,10 +2,20 @@ package sundial
 
 import "context"
 
-// Provider loads and saves one complete configuration document.
+// Metadata describes the Provider state paired with a configuration document.
+type Metadata struct {
+	Revision string
+}
+
+// Provider loads and conditionally saves one complete configuration document.
 type Provider interface {
-	Load(ctx context.Context) ([]byte, error)
-	Save(ctx context.Context, data []byte) error
+	// Load returns the current document and its revision from the same logical
+	// read. A missing document returns ErrNotFound and zero Metadata.
+	Load(ctx context.Context) ([]byte, Metadata, error)
+	// Save atomically replaces the document only when expectedMetadata.Revision
+	// matches the current revision. It returns the metadata paired with the saved
+	// document; a mismatch returns ErrConflict.
+	Save(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
 }
 
 // Watcher is an optional Provider capability for detecting external changes.
