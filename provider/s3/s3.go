@@ -25,6 +25,8 @@ type Config struct {
 	Key string
 	// Endpoint optionally overrides the standard AWS S3 endpoint.
 	Endpoint string
+	// UsePathStyle forces bucket names into request paths instead of hostnames.
+	UsePathStyle bool
 	// WatchInterval controls how often Watch checks the object ETag.
 	// The default is 30 seconds.
 	WatchInterval time.Duration
@@ -63,7 +65,10 @@ var (
 )
 
 // New creates an S3 Provider using the AWS SDK default configuration chain.
-func New(ctx context.Context, cfg Config) (*Provider, error) {
+func New(ctx context.Context, cfg *Config) (*Provider, error) {
+	if cfg == nil {
+		return nil, ErrConfigRequired
+	}
 	if cfg.Bucket == "" {
 		return nil, ErrBucketRequired
 	}
@@ -73,8 +78,9 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 	if cfg.WatchInterval < 0 {
 		return nil, ErrWatchIntervalInvalid
 	}
-	if cfg.WatchInterval == 0 {
-		cfg.WatchInterval = defaultWatchInterval
+	normalized := *cfg
+	if normalized.WatchInterval == 0 {
+		normalized.WatchInterval = defaultWatchInterval
 	}
 
 	loadOptions := make([]func(*awsconfig.LoadOptions) error, 0, 1)
@@ -90,11 +96,12 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 		if cfg.Endpoint != "" {
 			options.BaseEndpoint = &cfg.Endpoint
 		}
+		options.UsePathStyle = cfg.UsePathStyle
 	})
-	return newProvider(client, cfg), nil
+	return newProvider(client, &normalized), nil
 }
 
-func newProvider(client s3Client, cfg Config) *Provider {
+func newProvider(client s3Client, cfg *Config) *Provider {
 	return &Provider{
 		client:        client,
 		bucket:        cfg.Bucket,
@@ -131,22 +138,22 @@ func (p *Provider) Load(ctx context.Context) ([]byte, sundial.Metadata, error) {
 	return data, sundial.Metadata{Revision: *output.ETag}, nil
 }
 
-// Save conditionally replaces the object and returns its new ETag.
-func (p *Provider) Save(
+// PutIfRevision replaces an existing object only when its ETag matches the
+// expected revision.
+func (p *Provider) PutIfRevision(
 	ctx context.Context,
 	data []byte,
 	expectedMetadata sundial.Metadata,
 ) (sundial.Metadata, error) {
-	input := &awss3.PutObjectInput{
-		Body:   bytes.NewReader(data),
-		Bucket: &p.bucket,
-		Key:    &p.key,
-	}
 	if expectedMetadata.Revision == "" {
-		ifNoneMatch := "*"
-		input.IfNoneMatch = &ifNoneMatch
-	} else {
-		input.IfMatch = &expectedMetadata.Revision
+		return sundial.Metadata{}, fmt.Errorf("s3: put object: %w", sundial.ErrConflict)
+	}
+
+	input := &awss3.PutObjectInput{
+		Body:    bytes.NewReader(data),
+		Bucket:  &p.bucket,
+		Key:     &p.key,
+		IfMatch: &expectedMetadata.Revision,
 	}
 
 	output, err := p.client.PutObject(ctx, input)
@@ -157,10 +164,8 @@ func (p *Provider) Save(
 				return sundial.Metadata{},
 					fmt.Errorf("s3: put object: %w: %w", sundial.ErrConflict, err)
 			case "NoSuchKey", "NotFound":
-				if expectedMetadata.Revision != "" {
-					return sundial.Metadata{},
-						fmt.Errorf("s3: put object: %w: %w", sundial.ErrConflict, err)
-				}
+				return sundial.Metadata{},
+					fmt.Errorf("s3: put object: %w: %w", sundial.ErrConflict, err)
 			}
 		}
 		return sundial.Metadata{}, fmt.Errorf("s3: put object: %w", err)

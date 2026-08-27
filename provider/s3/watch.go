@@ -18,30 +18,34 @@ func (p *Provider) Watch(ctx context.Context, notify func() error) error {
 	if err != nil {
 		return err
 	}
-	// Always reload once after polling starts so a change between Sundial's
-	// initial reload and this first HeadObject call cannot be missed.
-	if err := notify(); err != nil {
-		return fmt.Errorf("s3: notify change: %w", err)
-	}
 
 	ticker := time.NewTicker(p.watchInterval)
 	defer ticker.Stop()
 
+	var appliedRevision *string
+
 	for {
+		// The first reload closes the gap between Sundial's initial load and
+		// watcher registration. Later reloads run only for an unapplied revision.
+		if appliedRevision == nil || revision != *appliedRevision {
+			notifyErr := notify()
+			if notifyErr != nil {
+				if errors.Is(notifyErr, context.Canceled) {
+					return notifyErr
+				}
+			} else {
+				applied := revision
+				appliedRevision = &applied
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			nextRevision, err := p.loadRevision(ctx)
+			revision, err = p.loadRevision(ctx)
 			if err != nil {
 				return err
-			}
-			if nextRevision == revision {
-				continue
-			}
-			revision = nextRevision
-			if err := notify(); err != nil {
-				return fmt.Errorf("s3: notify change: %w", err)
 			}
 		}
 	}

@@ -2,7 +2,6 @@ package sundial
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -29,7 +28,7 @@ type Entry[T any] struct {
 }
 
 // New creates a Sundial instance backed by provider and loads its initial configuration.
-// A missing configuration document starts with the zero value of T.
+// A missing configuration document returns ErrNotFound.
 func New[T any](ctx context.Context, provider Provider, opts ...Option) (*Sundial[T], error) {
 	normalized := normalizeOptions(opts)
 	s := &Sundial[T]{
@@ -73,9 +72,9 @@ func (s *Sundial[T]) Put(ctx context.Context, entry Entry[T]) error {
 	if err != nil {
 		return err
 	}
-	metadata, err := s.provider.Save(ctx, data, entry.Metadata)
+	metadata, err := s.provider.PutIfRevision(ctx, data, entry.Metadata)
 	if err != nil {
-		return fmt.Errorf("sundial: save configuration: %w", err)
+		return fmt.Errorf("sundial: put configuration: %w", err)
 	}
 
 	next.metadata = metadata
@@ -85,10 +84,7 @@ func (s *Sundial[T]) Put(ctx context.Context, entry Entry[T]) error {
 
 func (s *Sundial[T]) loadSnapshot(ctx context.Context) (*snapshot, error) {
 	data, metadata, err := s.provider.Load(ctx)
-	if errors.Is(err, ErrNotFound) {
-		data = nil
-		metadata = Metadata{Revision: ""}
-	} else if err != nil {
+	if err != nil {
 		return nil, fmt.Errorf("sundial: load configuration: %w", err)
 	}
 

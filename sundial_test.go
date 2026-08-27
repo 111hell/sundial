@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +36,28 @@ type tlsConfig struct {
 
 type prefixedJSONCodec struct {
 	prefix []byte
+}
+
+type reloadErrorWatcher struct {
+	*providertesting.Provider
+
+	reloadErr      error
+	failLoad       atomic.Bool
+	callbackResult chan error
+}
+
+func (p *reloadErrorWatcher) Load(ctx context.Context) ([]byte, sundial.Metadata, error) {
+	if p.failLoad.Load() {
+		return nil, sundial.Metadata{}, p.reloadErr
+	}
+	return p.Provider.Load(ctx)
+}
+
+func (p *reloadErrorWatcher) Watch(_ context.Context, notify func() error) error {
+	p.failLoad.Store(true)
+	err := notify()
+	p.callbackResult <- err
+	return err
 }
 
 func (c prefixedJSONCodec) Encode(value any) ([]byte, error) {
@@ -93,26 +116,15 @@ func TestNewLoadsTypedConfigurationIntoMemory(t *testing.T) {
 	}
 }
 
-func TestMissingConfigurationStartsWithZeroValue(t *testing.T) {
+func TestNewRejectsMissingConfiguration(t *testing.T) {
 	t.Parallel()
 
-	configStore, err := sundial.New[testConfig](
+	_, err := sundial.New[testConfig](
 		context.Background(),
 		providertesting.New(nil),
 	)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	config := entry.Value
-	if config.Server.Host != "" || config.Server.Port != 0 || config.Server.Tags != nil ||
-		config.Server.TLS != nil || config.Enabled || config.Ratio != 0 || config.Counter != 0 ||
-		config.Labels != nil {
-		t.Fatalf("Get() = %#v, want zero value", config)
+	if !errors.Is(err, sundial.ErrNotFound) {
+		t.Fatalf("New() error = %v, want ErrNotFound", err)
 	}
 }
 
@@ -220,8 +232,8 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 		t.Fatalf("Put() error = %v", putErr)
 	}
 
-	if got := provider.SaveCount(); got != 1 {
-		t.Fatalf("SaveCount() = %d, want 1", got)
+	if got := provider.PutCount(); got != 1 {
+		t.Fatalf("PutCount() = %d, want 1", got)
 	}
 	var saved testConfig
 	if decodeErr := json.Unmarshal(provider.Data(), &saved); decodeErr != nil {
@@ -247,7 +259,7 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 	}
 }
 
-func TestSaveFailureKeepsPreviousMemory(t *testing.T) {
+func TestPutFailureKeepsPreviousMemory(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
@@ -259,7 +271,7 @@ func TestSaveFailureKeepsPreviousMemory(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	provider.SetSaveError(errors.New("save failed"))
+	provider.SetPutError(errors.New("put failed"))
 	entry, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
@@ -302,6 +314,28 @@ func TestReloadFailureKeepsPreviousMemory(t *testing.T) {
 	}
 	if entry.Value.Server.Port != 8080 {
 		t.Fatalf("port after failed reload = %d, want 8080", entry.Value.Server.Port)
+	}
+}
+
+func TestReloadRejectsMissingConfiguration(t *testing.T) {
+	t.Parallel()
+
+	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
+	configStore, err := sundial.New[testConfig](context.Background(), provider)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	provider.SetData(nil)
+	if reloadErr := configStore.Reload(context.Background()); !errors.Is(reloadErr, sundial.ErrNotFound) {
+		t.Fatalf("Reload() error = %v, want ErrNotFound", reloadErr)
+	}
+	entry, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if entry.Value.Server.Port != 8080 {
+		t.Fatalf("port after missing reload = %d, want 8080", entry.Value.Server.Port)
 	}
 }
 
@@ -428,6 +462,54 @@ func TestNativeWatchReloadsExternalChanges(t *testing.T) {
 	}
 }
 
+func TestNativeWatcherReceivesReloadError(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("load failed")
+	provider := &reloadErrorWatcher{
+		Provider:       providertesting.New([]byte(`{"enabled":false}`)),
+		reloadErr:      wantErr,
+		callbackResult: make(chan error, 1),
+	}
+	configStore, err := sundial.New[testConfig](context.Background(), provider)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	reported := make(chan error, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- configStore.Watch(context.Background(), sundial.WithOnError(func(err error) {
+			reported <- err
+		}))
+	}()
+
+	select {
+	case callbackErr := <-provider.callbackResult:
+		if !errors.Is(callbackErr, wantErr) {
+			t.Fatalf("Watcher callback error = %v, want %v", callbackErr, wantErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Watcher callback was not invoked")
+	}
+	select {
+	case reportedErr := <-reported:
+		if !errors.Is(reportedErr, wantErr) {
+			t.Fatalf("OnError() error = %v, want %v", reportedErr, wantErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnError() was not invoked")
+	}
+	if err := <-done; !errors.Is(err, wantErr) {
+		t.Fatalf("Watch() error = %v, want %v", err, wantErr)
+	}
+	select {
+	case duplicateErr := <-reported:
+		t.Fatalf("OnError() was invoked twice; second error = %v", duplicateErr)
+	default:
+	}
+}
+
 func TestPutRejectsStaleRevisionWithinInstance(t *testing.T) {
 	t.Parallel()
 
@@ -529,48 +611,23 @@ func TestPutRejectsStaleRevisionAcrossInstancesAndAllowsRetry(t *testing.T) {
 	}
 }
 
-func TestPutAllowsOnlyOneConcurrentCreate(t *testing.T) {
+func TestPutRejectsEntryWithoutRevision(t *testing.T) {
 	t.Parallel()
 
-	provider := providertesting.New(nil)
-	firstStore, err := sundial.New[testConfig](context.Background(), provider)
+	provider := providertesting.New([]byte(`{"counter":0}`))
+	configStore, err := sundial.New[testConfig](context.Background(), provider)
 	if err != nil {
-		t.Fatalf("first New() error = %v", err)
-	}
-	secondStore, err := sundial.New[testConfig](context.Background(), provider)
-	if err != nil {
-		t.Fatalf("second New() error = %v", err)
+		t.Fatalf("New() error = %v", err)
 	}
 
-	firstEntry, err := firstStore.Get()
-	if err != nil {
-		t.Fatalf("first Get() error = %v", err)
-	}
-	first := firstEntry.Value
-	secondEntry, err := secondStore.Get()
-	if err != nil {
-		t.Fatalf("second Get() error = %v", err)
-	}
-	second := secondEntry.Value
-
-	first.Counter = 1
-	firstEntry.Value = first
-	if putErr := firstStore.Put(context.Background(), firstEntry); putErr != nil {
-		t.Fatalf("first Put() error = %v", putErr)
-	}
-	second.Enabled = true
-	secondEntry.Value = second
-	putErr := secondStore.Put(context.Background(), secondEntry)
+	putErr := configStore.Put(context.Background(), sundial.Entry[testConfig]{
+		Value: testConfig{Counter: 1},
+	})
 	if !errors.Is(putErr, sundial.ErrConflict) {
-		t.Fatalf("second Put() error = %v, want ErrConflict", putErr)
+		t.Fatalf("Put() error = %v, want ErrConflict", putErr)
 	}
-
-	var saved testConfig
-	if decodeErr := json.Unmarshal(provider.Data(), &saved); decodeErr != nil {
-		t.Fatalf("decode saved configuration: %v", decodeErr)
-	}
-	if saved.Counter != 1 || saved.Enabled {
-		t.Fatalf("saved configuration = %#v, want first write only", saved)
+	if string(provider.Data()) != `{"counter":0}` {
+		t.Fatalf("provider data = %s, want unchanged configuration", provider.Data())
 	}
 }
 
@@ -598,8 +655,8 @@ func TestReloadTracksChangedProviderRevisionWhenContentIsUnchanged(t *testing.T)
 	if putErr := configStore.Put(context.Background(), entry); putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
 	}
-	if got := provider.SaveCount(); got != 1 {
-		t.Fatalf("SaveCount() = %d, want 1 without a stale-revision retry", got)
+	if got := provider.PutCount(); got != 1 {
+		t.Fatalf("PutCount() = %d, want 1 without a stale-revision retry", got)
 	}
 }
 

@@ -3,6 +3,8 @@ package s3
 import "errors"
 
 var (
+	// ErrConfigRequired reports a nil Config passed to New.
+	ErrConfigRequired = errors.New("sundial: s3 config is required")
 	// ErrBucketRequired reports a missing bucket in Config.
 	ErrBucketRequired = errors.New("sundial: s3 bucket is required")
 	// ErrKeyRequired reports a missing object key in Config.

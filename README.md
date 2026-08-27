@@ -54,7 +54,7 @@ if err != nil {
 ```go
 import s3provider "github.com/sundayfun/sundial/provider/s3"
 
-provider, err := s3provider.New(ctx, s3provider.Config{
+provider, err := s3provider.New(ctx, &s3provider.Config{
 	Region: "us-east-1",
 	Bucket: "my-config-bucket",
 	Key:    "production/app.json",
@@ -159,19 +159,21 @@ Custom formats can implement `codec.Codec`.
 
 ## Build a provider
 
-A Provider loads and conditionally saves one complete configuration document:
+A Provider loads and conditionally writes one complete configuration document:
 
 ```go
 type Provider interface {
 	Load(ctx context.Context) ([]byte, Metadata, error)
-	Save(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
+	PutIfRevision(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
 }
 ```
 
 The data and `Metadata` returned by `Load` must belong to the same configuration
-state. `Save` must replace the configuration only when
+state. `PutIfRevision` must replace the configuration only when
 `expectedMetadata.Revision` matches the current revision and return
-`ErrConflict` otherwise. The Provider must enforce this check atomically.
+`ErrConflict` otherwise. The expected revision must be non-empty;
+`PutIfRevision` does not create missing documents. The Provider must enforce
+this check atomically.
 
 For native change notifications, it can also implement:
 
@@ -190,7 +192,7 @@ Concrete storage implementations live under `provider/<source>`. The core packag
 
 ## Behavior
 
-- A missing document starts with the zero value of the application's configuration type.
+- A missing document causes `New` or `Reload` to return `ErrNotFound`.
 - A failed or conflicting `Put` leaves the current in-memory snapshot unchanged.
 - A failed reload keeps the last valid snapshot.
 - `Get` is safe for concurrent use. `Put` calls are serialized per instance, and stale revisions return `ErrConflict`.

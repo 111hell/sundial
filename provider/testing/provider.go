@@ -16,9 +16,9 @@ type Provider struct {
 	data      []byte
 	exists    bool
 	loadErr   error
-	saveErr   error
+	putErr    error
 	loadCount int
-	saveCount int
+	putCount  int
 	revision  uint64
 }
 
@@ -49,8 +49,9 @@ func (p *Provider) Load(context.Context) ([]byte, sundial.Metadata, error) {
 	return cloneBytes(p.data), sundial.Metadata{Revision: p.currentRevision()}, nil
 }
 
-// Save replaces the current test document when expectedMetadata.Revision is current.
-func (p *Provider) Save(
+// PutIfRevision replaces the current test document when
+// expectedMetadata.Revision is current.
+func (p *Provider) PutIfRevision(
 	_ context.Context,
 	data []byte,
 	expectedMetadata sundial.Metadata,
@@ -58,11 +59,11 @@ func (p *Provider) Save(
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.saveCount++
-	if p.saveErr != nil {
-		return sundial.Metadata{}, p.saveErr
+	p.putCount++
+	if p.putErr != nil {
+		return sundial.Metadata{}, p.putErr
 	}
-	if expectedMetadata.Revision != p.currentRevision() {
+	if expectedMetadata.Revision == "" || expectedMetadata.Revision != p.currentRevision() {
 		return sundial.Metadata{}, sundial.ErrConflict
 	}
 	p.revision++
@@ -88,11 +89,11 @@ func (p *Provider) SetLoadError(err error) {
 	p.loadErr = err
 }
 
-// SetSaveError configures Save to fail.
-func (p *Provider) SetSaveError(err error) {
+// SetPutError configures Put to fail.
+func (p *Provider) SetPutError(err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.saveErr = err
+	p.putErr = err
 }
 
 // Data returns a copy of the current test document.
@@ -109,11 +110,11 @@ func (p *Provider) LoadCount() int {
 	return p.loadCount
 }
 
-// SaveCount returns the number of Save calls.
-func (p *Provider) SaveCount() int {
+// PutCount returns the number of Put calls.
+func (p *Provider) PutCount() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.saveCount
+	return p.putCount
 }
 
 // WatchProvider adds native watch support to Provider.

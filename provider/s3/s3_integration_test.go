@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,14 +25,6 @@ func TestProviderWithMinIO(t *testing.T) {
 	defer cancel()
 	provider := newMinIOProvider(t, ctx)
 
-	created, err := provider.Save(ctx, []byte(`{"port":8080}`), sundial.Metadata{})
-	if err != nil {
-		t.Fatalf("create object: %v", err)
-	}
-	if created.Revision == "" {
-		t.Fatal("create object returned an empty revision")
-	}
-
 	data, loaded, err := provider.Load(ctx)
 	if err != nil {
 		t.Fatalf("load object: %v", err)
@@ -39,19 +32,19 @@ func TestProviderWithMinIO(t *testing.T) {
 	if string(data) != `{"port":8080}` {
 		t.Fatalf("load object data = %s, want {\"port\":8080}", data)
 	}
-	if loaded.Revision != created.Revision {
-		t.Fatalf("load revision = %q, want %q", loaded.Revision, created.Revision)
+	if loaded.Revision == "" {
+		t.Fatal("load object returned an empty revision")
 	}
 
-	updated, err := provider.Save(ctx, []byte(`{"port":9090}`), loaded)
+	updated, err := provider.PutIfRevision(ctx, []byte(`{"port":9090}`), loaded)
 	if err != nil {
 		t.Fatalf("update object: %v", err)
 	}
-	if updated.Revision == "" || updated.Revision == created.Revision {
-		t.Fatalf("revision did not advance: created = %q, updated = %q", created.Revision, updated.Revision)
+	if updated.Revision == "" || updated.Revision == loaded.Revision {
+		t.Fatalf("revision did not advance: loaded = %q, updated = %q", loaded.Revision, updated.Revision)
 	}
 
-	if _, err := provider.Save(ctx, []byte(`{"port":7070}`), created); !errors.Is(err, sundial.ErrConflict) {
+	if _, err := provider.PutIfRevision(ctx, []byte(`{"port":7070}`), loaded); !errors.Is(err, sundial.ErrConflict) {
 		t.Fatalf("stale update error = %v, want sundial.ErrConflict", err)
 	}
 }
@@ -102,12 +95,20 @@ func newMinIOProvider(
 			t.Errorf("delete bucket: %v", deleteBucketErr)
 		}
 	})
+	if _, putObjectErr := admin.PutObject(ctx, &awss3.PutObjectInput{
+		Body:   strings.NewReader(`{"port":8080}`),
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}); putObjectErr != nil {
+		t.Fatalf("create initial object: %v", putObjectErr)
+	}
 
-	provider, err := s3provider.New(ctx, s3provider.Config{
-		Region:   region,
-		Bucket:   bucket,
-		Key:      key,
-		Endpoint: endpoint,
+	provider, err := s3provider.New(ctx, &s3provider.Config{
+		Region:       region,
+		Bucket:       bucket,
+		Key:          key,
+		Endpoint:     endpoint,
+		UsePathStyle: true,
 	})
 	if err != nil {
 		t.Fatalf("create S3 provider: %v", err)

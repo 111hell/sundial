@@ -53,7 +53,7 @@ if err != nil {
 ```go
 import s3provider "github.com/sundayfun/sundial/provider/s3"
 
-provider, err := s3provider.New(ctx, s3provider.Config{
+provider, err := s3provider.New(ctx, &s3provider.Config{
 	Region: "us-east-1",
 	Bucket: "my-config-bucket",
 	Key:    "production/app.json",
@@ -158,18 +158,19 @@ configStore, err := sundial.New[Config](
 
 ## 实现 Provider
 
-Provider 负责加载并有条件地保存一份完整配置：
+Provider 负责加载并有条件地写入一份完整配置：
 
 ```go
 type Provider interface {
 	Load(ctx context.Context) ([]byte, Metadata, error)
-	Save(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
+	PutIfRevision(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
 }
 ```
 
 `Load` 返回的数据和 `Metadata` 必须对应同一配置状态。只有
-`expectedMetadata.Revision` 与当前配置的 Revision 匹配时，`Save` 才能替换配置；
-否则返回 `ErrConflict`。Provider 必须原子地完成这项检查。
+`expectedMetadata.Revision` 与当前配置的 Revision 匹配时，`PutIfRevision`
+才能替换配置；否则返回 `ErrConflict`。预期 Revision 不能为空；
+`PutIfRevision` 不负责创建缺失的配置文档。Provider 必须原子地完成这项检查。
 
 需要原生监听能力时，还可以实现：
 
@@ -188,7 +189,7 @@ type Watcher interface {
 
 ## 行为约定
 
-- 配置文档不存在时，从应用配置类型的零值开始。
+- 配置文档不存在时，`New` 或 `Reload` 返回 `ErrNotFound`。
 - `Put` 失败或发生冲突时，当前内存快照保持不变。
 - 重新加载失败时，保留上一份有效配置。
 - `Get` 支持并发调用。同一实例的 `Put` 会串行执行，陈旧 `Revision` 会返回 `ErrConflict`。
