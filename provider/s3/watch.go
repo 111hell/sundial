@@ -59,7 +59,7 @@ func (p *Provider) loadRevision(ctx context.Context) (string, error) {
 	if err != nil {
 		if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 			switch apiErr.ErrorCode() {
-			case "NoSuchKey", "NotFound": //nolint:goconst // Keep AWS codes beside their mapping.
+			case errorCodeNoSuchKey, errorCodeNotFound:
 				return "", nil
 			}
 		}

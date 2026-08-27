@@ -159,21 +159,19 @@ Custom formats can implement `codec.Codec`.
 
 ## Build a provider
 
-A Provider loads and conditionally writes one complete configuration document:
+A Provider reads and writes one complete configuration document:
 
 ```go
 type Provider interface {
-	Load(ctx context.Context) ([]byte, Metadata, error)
+	Get(ctx context.Context) ([]byte, Metadata, error)
+	Put(ctx context.Context, data []byte) (Metadata, error)
 	PutIfRevision(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
 }
 ```
 
-The data and `Metadata` returned by `Load` must belong to the same configuration
-state. `PutIfRevision` must replace the configuration only when
-`expectedMetadata.Revision` matches the current revision and return
-`ErrConflict` otherwise. The expected revision must be non-empty;
-`PutIfRevision` does not create missing documents. The Provider must enforce
-this check atomically.
+The data and `Metadata` returned by `Get` must belong to the same configuration
+state. `Put` writes without checking the current revision. `PutIfRevision`
+requires a non-empty matching revision and returns `ErrConflict` otherwise.
 
 For native change notifications, it can also implement:
 

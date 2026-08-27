@@ -42,19 +42,19 @@ type reloadErrorWatcher struct {
 	*providertesting.Provider
 
 	reloadErr      error
-	failLoad       atomic.Bool
+	failGet        atomic.Bool
 	callbackResult chan error
 }
 
-func (p *reloadErrorWatcher) Load(ctx context.Context) ([]byte, sundial.Metadata, error) {
-	if p.failLoad.Load() {
+func (p *reloadErrorWatcher) Get(ctx context.Context) ([]byte, sundial.Metadata, error) {
+	if p.failGet.Load() {
 		return nil, sundial.Metadata{}, p.reloadErr
 	}
-	return p.Provider.Load(ctx)
+	return p.Provider.Get(ctx)
 }
 
 func (p *reloadErrorWatcher) Watch(_ context.Context, notify func() error) error {
-	p.failLoad.Store(true)
+	p.failGet.Store(true)
 	err := notify()
 	p.callbackResult <- err
 	return err
@@ -102,8 +102,8 @@ func TestNewLoadsTypedConfigurationIntoMemory(t *testing.T) {
 	if !config.Enabled {
 		t.Fatal("Get().Enabled = false, want true")
 	}
-	if got := provider.LoadCount(); got != 1 {
-		t.Fatalf("LoadCount() = %d, want 1", got)
+	if got := provider.GetCount(); got != 1 {
+		t.Fatalf("GetCount() = %d, want 1", got)
 	}
 
 	for range 10 {
@@ -111,8 +111,8 @@ func TestNewLoadsTypedConfigurationIntoMemory(t *testing.T) {
 			t.Fatalf("Get() error = %v", getErr)
 		}
 	}
-	if got := provider.LoadCount(); got != 1 {
-		t.Fatalf("memory reads called Provider.Load: count = %d", got)
+	if got := provider.GetCount(); got != 1 {
+		t.Fatalf("memory reads called Provider.Get: count = %d", got)
 	}
 }
 
@@ -232,8 +232,8 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 		t.Fatalf("Put() error = %v", putErr)
 	}
 
-	if got := provider.PutCount(); got != 1 {
-		t.Fatalf("PutCount() = %d, want 1", got)
+	if got := provider.PutIfRevisionCount(); got != 1 {
+		t.Fatalf("PutIfRevisionCount() = %d, want 1", got)
 	}
 	var saved testConfig
 	if decodeErr := json.Unmarshal(provider.Data(), &saved); decodeErr != nil {
@@ -271,7 +271,7 @@ func TestPutFailureKeepsPreviousMemory(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	provider.SetPutError(errors.New("put failed"))
+	provider.SetPutIfRevisionError(errors.New("put failed"))
 	entry, err := configStore.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
@@ -655,8 +655,8 @@ func TestReloadTracksChangedProviderRevisionWhenContentIsUnchanged(t *testing.T)
 	if putErr := configStore.Put(context.Background(), entry); putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
 	}
-	if got := provider.PutCount(); got != 1 {
-		t.Fatalf("PutCount() = %d, want 1 without a stale-revision retry", got)
+	if got := provider.PutIfRevisionCount(); got != 1 {
+		t.Fatalf("PutIfRevisionCount() = %d, want 1 without a stale-revision retry", got)
 	}
 }
 

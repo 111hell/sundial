@@ -2,6 +2,13 @@ package s3
 
 import "errors"
 
+const (
+	errorCodeNoSuchKey                  = "NoSuchKey"
+	errorCodeNotFound                   = "NotFound"
+	errorCodePreconditionFailed         = "PreconditionFailed"
+	errorCodeConditionalRequestConflict = "ConditionalRequestConflict"
+)
+
 var (
 	// ErrConfigRequired reports a nil Config passed to New.
 	ErrConfigRequired = errors.New("sundial: s3 config is required")

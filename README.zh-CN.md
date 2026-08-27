@@ -158,19 +158,19 @@ configStore, err := sundial.New[Config](
 
 ## 实现 Provider
 
-Provider 负责加载并有条件地写入一份完整配置：
+Provider 负责读取和写入一份完整配置：
 
 ```go
 type Provider interface {
-	Load(ctx context.Context) ([]byte, Metadata, error)
+	Get(ctx context.Context) ([]byte, Metadata, error)
+	Put(ctx context.Context, data []byte) (Metadata, error)
 	PutIfRevision(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
 }
 ```
 
-`Load` 返回的数据和 `Metadata` 必须对应同一配置状态。只有
-`expectedMetadata.Revision` 与当前配置的 Revision 匹配时，`PutIfRevision`
-才能替换配置；否则返回 `ErrConflict`。预期 Revision 不能为空；
-`PutIfRevision` 不负责创建缺失的配置文档。Provider 必须原子地完成这项检查。
+`Get` 返回的数据和 `Metadata` 必须对应同一配置状态。`Put` 不检查当前
+Revision；`PutIfRevision` 要求非空 Revision 与当前状态匹配，否则返回
+`ErrConflict`。
 
 需要原生监听能力时，还可以实现：
 

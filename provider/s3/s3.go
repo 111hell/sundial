@@ -110,8 +110,8 @@ func newProvider(client s3Client, cfg *Config) *Provider {
 	}
 }
 
-// Load reads the current object and uses its ETag as the revision.
-func (p *Provider) Load(ctx context.Context) ([]byte, sundial.Metadata, error) {
+// Get reads the current object and uses its ETag as the revision.
+func (p *Provider) Get(ctx context.Context) ([]byte, sundial.Metadata, error) {
 	output, err := p.client.GetObject(ctx, &awss3.GetObjectInput{
 		Bucket: &p.bucket,
 		Key:    &p.key,
@@ -119,7 +119,7 @@ func (p *Provider) Load(ctx context.Context) ([]byte, sundial.Metadata, error) {
 	if err != nil {
 		if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 			switch apiErr.ErrorCode() {
-			case "NoSuchKey", "NotFound": //nolint:goconst // Keep AWS codes beside their mapping.
+			case errorCodeNoSuchKey, errorCodeNotFound:
 				return nil, sundial.Metadata{},
 					fmt.Errorf("s3: get object: %w: %w", sundial.ErrNotFound, err)
 			}
@@ -136,6 +136,22 @@ func (p *Provider) Load(ctx context.Context) ([]byte, sundial.Metadata, error) {
 		return nil, sundial.Metadata{}, ErrEmptyETag
 	}
 	return data, sundial.Metadata{Revision: *output.ETag}, nil
+}
+
+// Put writes the object without checking its current ETag.
+func (p *Provider) Put(ctx context.Context, data []byte) (sundial.Metadata, error) {
+	output, err := p.client.PutObject(ctx, &awss3.PutObjectInput{
+		Body:   bytes.NewReader(data),
+		Bucket: &p.bucket,
+		Key:    &p.key,
+	})
+	if err != nil {
+		return sundial.Metadata{}, fmt.Errorf("s3: put object: %w", err)
+	}
+	if output.ETag == nil || *output.ETag == "" {
+		return sundial.Metadata{}, ErrEmptyETag
+	}
+	return sundial.Metadata{Revision: *output.ETag}, nil
 }
 
 // PutIfRevision replaces an existing object only when its ETag matches the
@@ -160,10 +176,10 @@ func (p *Provider) PutIfRevision(
 	if err != nil {
 		if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 			switch apiErr.ErrorCode() {
-			case "PreconditionFailed", "ConditionalRequestConflict":
+			case errorCodePreconditionFailed, errorCodeConditionalRequestConflict:
 				return sundial.Metadata{},
 					fmt.Errorf("s3: put object: %w: %w", sundial.ErrConflict, err)
-			case "NoSuchKey", "NotFound":
+			case errorCodeNoSuchKey, errorCodeNotFound:
 				return sundial.Metadata{},
 					fmt.Errorf("s3: put object: %w: %w", sundial.ErrConflict, err)
 			}

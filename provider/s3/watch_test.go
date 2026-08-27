@@ -18,24 +18,7 @@ type headResult struct {
 func TestWatchNotifiesOnCreateUpdateAndDelete(t *testing.T) {
 	t.Parallel()
 
-	requests := make(chan chan headResult)
-	client := &testClient{head: func(
-		ctx context.Context,
-		_ *awss3.HeadObjectInput,
-	) (*awss3.HeadObjectOutput, error) {
-		response := make(chan headResult, 1)
-		select {
-		case requests <- response:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-		select {
-		case result := <-response:
-			return result.output, result.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}}
+	client, requests := newControlledHeadClient()
 	provider := newProvider(client, &Config{
 		Bucket:        "configs",
 		Key:           "app.json",
@@ -44,34 +27,36 @@ func TestWatchNotifiesOnCreateUpdateAndDelete(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	notified := make(chan struct{}, 1)
+	notifications := make(chan int, 4)
+	notifyCalls := 0
 	go func() {
 		done <- provider.Watch(ctx, func() error {
-			notified <- struct{}{}
+			notifyCalls++
+			notifications <- notifyCalls
 			return nil
 		})
 	}()
 
 	missing := &smithy.GenericAPIError{Code: "NotFound"}
 	respondToHead(t, requests, headResult{err: missing})
-	waitForNotification(t, notified)
+	waitForNotification(t, notifications, 1)
 
 	// Repeated missing state does not notify again.
 	respondToHead(t, requests, headResult{err: missing})
 	createdRequest := waitForHeadRequest(t, requests)
-	assertNoNotification(t, notified)
+	assertNoNotification(t, notifications)
 	createdETag := `"revision-1"`
 	createdRequest <- headResult{output: &awss3.HeadObjectOutput{ETag: &createdETag}}
-	waitForNotification(t, notified)
+	waitForNotification(t, notifications, 2)
 
 	updatedETag := `"revision-2"`
 	respondToHead(t, requests, headResult{
 		output: &awss3.HeadObjectOutput{ETag: &updatedETag},
 	})
-	waitForNotification(t, notified)
+	waitForNotification(t, notifications, 3)
 
 	respondToHead(t, requests, headResult{err: missing})
-	waitForNotification(t, notified)
+	waitForNotification(t, notifications, 4)
 
 	waitForHeadRequest(t, requests)
 	cancel()
@@ -104,24 +89,7 @@ func TestWatchReturnsHeadObjectError(t *testing.T) {
 func TestWatchRetriesAfterNotifyError(t *testing.T) {
 	t.Parallel()
 
-	requests := make(chan chan headResult)
-	client := &testClient{head: func(
-		ctx context.Context,
-		_ *awss3.HeadObjectInput,
-	) (*awss3.HeadObjectOutput, error) {
-		response := make(chan headResult, 1)
-		select {
-		case requests <- response:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-		select {
-		case result := <-response:
-			return result.output, result.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}}
+	client, requests := newControlledHeadClient()
 	provider := newProvider(client, &Config{
 		Bucket:        "configs",
 		Key:           "app.json",
@@ -147,13 +115,13 @@ func TestWatchRetriesAfterNotifyError(t *testing.T) {
 	respondToHead(t, requests, headResult{
 		output: &awss3.HeadObjectOutput{ETag: &initialETag},
 	})
-	waitForNotificationCall(t, notified, 1)
+	waitForNotification(t, notified, 1)
 
 	updatedETag := `"revision-2"`
 	respondToHead(t, requests, headResult{
 		output: &awss3.HeadObjectOutput{ETag: &updatedETag},
 	})
-	waitForNotificationCall(t, notified, 2)
+	waitForNotification(t, notified, 2)
 	select {
 	case err := <-done:
 		t.Fatalf("Watch() stopped after notify error: %v", err)
@@ -164,18 +132,60 @@ func TestWatchRetriesAfterNotifyError(t *testing.T) {
 	respondToHead(t, requests, headResult{
 		output: &awss3.HeadObjectOutput{ETag: &updatedETag},
 	})
-	waitForNotificationCall(t, notified, 3)
+	waitForNotification(t, notified, 3)
 
 	respondToHead(t, requests, headResult{
 		output: &awss3.HeadObjectOutput{ETag: &updatedETag},
 	})
 	waitForHeadRequest(t, requests)
-	assertNoNotificationCall(t, notified)
+	assertNoNotification(t, notified)
 
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Watch() error = %v, want context.Canceled", err)
 	}
+}
+
+func TestWatchStopsOnNotifyCancellation(t *testing.T) {
+	t.Parallel()
+
+	revision := `"revision-1"`
+	provider := newProvider(&testClient{
+		headOutput: &awss3.HeadObjectOutput{ETag: &revision},
+	}, &Config{
+		Bucket:        "configs",
+		Key:           "app.json",
+		WatchInterval: time.Millisecond,
+	})
+
+	err := provider.Watch(context.Background(), func() error {
+		return context.Canceled
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Watch() error = %v, want context.Canceled", err)
+	}
+}
+
+func newControlledHeadClient() (*testClient, chan chan headResult) {
+	requests := make(chan chan headResult)
+	client := &testClient{head: func(
+		ctx context.Context,
+		_ *awss3.HeadObjectInput,
+	) (*awss3.HeadObjectOutput, error) {
+		response := make(chan headResult, 1)
+		select {
+		case requests <- response:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		select {
+		case result := <-response:
+			return result.output, result.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}
+	return client, requests
 }
 
 func respondToHead(t *testing.T, requests <-chan chan headResult, result headResult) {
@@ -194,16 +204,7 @@ func waitForHeadRequest(t *testing.T, requests <-chan chan headResult) chan head
 	}
 }
 
-func waitForNotification(t *testing.T, notified <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-notified:
-	case <-time.After(time.Second):
-		t.Fatal("Watch() did not notify")
-	}
-}
-
-func waitForNotificationCall(t *testing.T, notified <-chan int, want int) {
+func waitForNotification(t *testing.T, notified <-chan int, want int) {
 	t.Helper()
 	select {
 	case got := <-notified:
@@ -215,20 +216,11 @@ func waitForNotificationCall(t *testing.T, notified <-chan int, want int) {
 	}
 }
 
-func assertNoNotificationCall(t *testing.T, notified <-chan int) {
+func assertNoNotification(t *testing.T, notified <-chan int) {
 	t.Helper()
 	select {
 	case call := <-notified:
 		t.Fatalf("Watch() made unexpected notification call %d", call)
-	default:
-	}
-}
-
-func assertNoNotification(t *testing.T, notified <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-notified:
-		t.Fatal("Watch() notified without an object state change")
 	default:
 	}
 }

@@ -83,9 +83,9 @@ func (s *Sundial[T]) Put(ctx context.Context, entry Entry[T]) error {
 }
 
 func (s *Sundial[T]) loadSnapshot(ctx context.Context) (*snapshot, error) {
-	data, metadata, err := s.provider.Load(ctx)
+	data, metadata, err := s.provider.Get(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("sundial: load configuration: %w", err)
+		return nil, fmt.Errorf("sundial: get configuration: %w", err)
 	}
 
 	return decodeSnapshot[T](s.codec, data, metadata)
