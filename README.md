@@ -1,18 +1,17 @@
 # Sundial
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[简体中文](README.zh-CN.md)
 
-Sundial is a lightweight, extensible, type-safe configuration SDK for Go with in-memory reads and persistent writes.
+Sundial is a lightweight, extensible, type-safe configuration SDK for Go with
+in-memory reads, persistent writes, and live updates.
 
-## Why Sundial
+## Features
 
-- **Type-safe access** — applications read their own configuration struct instead of string paths and `any` values.
-- **Fast reads** — `Get` reads only from an in-memory snapshot.
-- **Persistent writes** — `Put` conditionally saves one complete typed configuration document.
-- **Live updates** — `Watch` keeps memory synchronized with external changes.
-- **Extensible storage and formats** — storage sources implement `Provider`; JSON works by default and other formats use codecs.
-
-One Sundial instance manages one complete configuration document.
+- Type-safe access through application-defined configuration structs.
+- Fast reads from an in-memory snapshot.
+- Conditional writes that prevent stale updates.
+- Live updates through native Provider notifications or polling.
+- Extensible storage Providers and configuration codecs.
 
 ## Installation
 
@@ -27,32 +26,18 @@ Define the configuration owned by the application:
 ```go
 type Config struct {
 	Server struct {
-		Host string `json:"host" yaml:"host"`
-		Port int    `json:"port" yaml:"port"`
-	} `json:"server" yaml:"server"`
-	Debug bool `json:"debug" yaml:"debug"`
+		Host string `json:"host"`
+		Port int    `json:"port"`
+	} `json:"server"`
+	Debug bool `json:"debug"`
 }
 ```
 
-Create a Sundial with an initialized `Provider`. `New` loads and validates the
+Create an S3 Provider, then create a Sundial. `New` loads and validates the
 initial configuration:
 
 ```go
 ctx := context.Background()
-
-configStore, err := sundial.New[Config](
-	ctx,
-	provider,
-)
-if err != nil {
-	log.Fatal(err)
-}
-```
-
-### S3 provider
-
-```go
-import s3provider "github.com/sundayfun/sundial/provider/s3"
 
 provider, err := s3provider.New(ctx, &s3provider.Config{
 	Region: "us-east-1",
@@ -71,8 +56,7 @@ if err != nil {
 
 ### Read
 
-`Get` returns an `Entry` from memory without calling the Provider. Its `Value`
-is detached, and its `Metadata.Revision` belongs to the same snapshot:
+`Get` returns a detached `Entry` from the current in-memory snapshot:
 
 ```go
 entry, err := configStore.Get()
@@ -85,18 +69,13 @@ fmt.Println(entry.Value.Server.Port)
 
 ### Write
 
-Modify `entry.Value`, then pass the entry back to `Put` for a conditional save:
+Modify the value and pass the same `Entry` back for a conditional write:
 
 ```go
-entry, err := configStore.Get()
-if err != nil {
-	log.Fatal(err)
-}
-
 entry.Value.Server.Port = 9090
 if err := configStore.Put(ctx, entry); err != nil {
 	if errors.Is(err, sundial.ErrConflict) {
-		// Reload, read the new revision, reapply the change, and retry if appropriate.
+		// Reload, reapply the change, and retry if appropriate.
 		log.Print("configuration changed before it could be saved")
 		return
 	}
@@ -104,84 +83,34 @@ if err := configStore.Put(ctx, entry); err != nil {
 }
 ```
 
-`Put` uses `entry.Metadata.Revision` and returns `ErrConflict` if another writer
-wins. It does not merge or retry automatically.
+`Put` uses the revision in `entry.Metadata`; a stale revision returns
+`ErrConflict`. It does not merge or retry automatically.
 
 ## Watch for changes
 
-`Watch` blocks until its context is canceled or the Provider watcher stops:
+`Watch` reloads changed Provider content and keeps the in-memory snapshot up to
+date:
 
 ```go
-go func() {
-	err := configStore.Watch(
-		ctx,
-		sundial.WithOnChange(func() {
-			entry, err := configStore.Get()
-			if err != nil {
-				log.Printf("read configuration: %v", err)
-				return
-			}
-			log.Printf("configuration updated: port=%d", entry.Value.Server.Port)
-		}),
-		sundial.WithOnError(func(err error) {
-			log.Printf("watch error: %v", err)
-		}),
-	)
-	if err != nil && !errors.Is(err, context.Canceled) {
-		log.Printf("watch stopped: %v", err)
-	}
-}()
-```
-
-Providers may implement native change notifications through `Watcher`. Otherwise, Sundial polls the Provider every 30 seconds by default; use `WithWatchInterval` to change the interval.
-
-The S3 Provider implements `Watcher` by polling object metadata. It calls
-`HeadObject` on its `Config.WatchInterval`; after startup synchronization, it
-downloads the object only when the ETag changes. The interval defaults to 30 seconds.
-
-External content is decoded as the application's configuration type before publication. A failed reload keeps the last valid snapshot and is reported through `WithOnError`.
-
-## Configuration formats
-
-JSON is the default. Use the provided YAML codec when the source stores YAML:
-
-```go
-import yamlcodec "github.com/sundayfun/sundial/codec/yaml"
-
-configStore, err := sundial.New[Config](
+err := configStore.Watch(
 	ctx,
-	provider,
-	sundial.WithCodec(yamlcodec.New()),
+	sundial.WithOnChange(func() {
+		log.Print("configuration updated")
+	}),
+	sundial.WithOnError(func(err error) {
+		log.Printf("watch error: %v", err)
+	}),
 )
-```
-
-Custom formats can implement `codec.Codec`.
-
-## Build a provider
-
-A Provider reads and writes one complete configuration document:
-
-```go
-type Provider interface {
-	Get(ctx context.Context) ([]byte, Metadata, error)
-	Put(ctx context.Context, data []byte) (Metadata, error)
-	PutIfRevision(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
+if err != nil && !errors.Is(err, context.Canceled) {
+	log.Fatal(err)
 }
 ```
 
-The data and `Metadata` returned by `Get` must belong to the same configuration
-state. `Put` writes without checking the current revision. `PutIfRevision`
-requires a non-empty matching revision and returns `ErrConflict` otherwise.
+JSON is used by default. Other formats can be configured with `WithCodec`.
+Storage implementations live under `provider/<source>`.
 
-For native change notifications, it can also implement:
-
-```go
-type Watcher interface {
-	Watch(ctx context.Context, notify func() error) error
-}
-```
-
-Concrete storage implementations live under `provider/<source>`. The core package does not depend on any storage SDK.
+See the runnable [S3 example](examples/s3) for complete setup, read, conditional
+write, and watch flows.
 
 ## References
 
@@ -193,17 +122,8 @@ Concrete storage implementations live under `provider/<source>`. The core packag
 - A missing document causes `New` or `Reload` to return `ErrNotFound`.
 - A failed or conflicting `Put` leaves the current in-memory snapshot unchanged.
 - A failed reload keeps the last valid snapshot.
-- `Get` is safe for concurrent use. `Put` calls are serialized per instance, and stale revisions return `ErrConflict`.
-
-## Development
-
-The repository pins its golangci-lint version. Run the local quality gate with [Just](https://just.systems/):
-
-```sh
-just lint # Check without modifying files.
-just fmt  # Apply the configured formatters.
-just test # Run lint and race-enabled tests.
-```
+- `Get` is safe for concurrent use. `Put` calls are serialized per instance,
+  and stale revisions return `ErrConflict`.
 
 ## License
 
