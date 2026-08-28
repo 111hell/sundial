@@ -5,13 +5,15 @@
 Sundial is a lightweight, extensible, type-safe configuration SDK for Go with
 in-memory reads, persistent writes, and live updates.
 
-## Features
+## Why Sundial
 
-- Type-safe access through application-defined configuration structs.
-- Fast reads from an in-memory snapshot.
-- Conditional writes that prevent stale updates.
-- Live updates through native Provider notifications or polling.
-- Extensible storage Providers and configuration codecs.
+- **Type-safe access** — applications read their own configuration struct instead of string paths and `any` values.
+- **Fast reads** — `Get` reads only from an in-memory snapshot.
+- **Persistent writes** — `Put` conditionally saves one complete typed configuration document.
+- **Live updates** — `Watch` keeps memory synchronized with external changes.
+- **Extensible storage and formats** — storage sources implement `Provider`; JSON works by default and other formats use codecs.
+
+One Sundial instance manages one complete configuration document.
 
 ## Installation
 
@@ -33,8 +35,8 @@ type Config struct {
 }
 ```
 
-Create an S3 Provider, then create a Sundial. `New` loads and validates the
-initial configuration:
+The following example uses the S3 Provider. Create the Provider, then create
+Sundial. `New` loads and validates the initial configuration:
 
 ```go
 ctx := context.Background()
