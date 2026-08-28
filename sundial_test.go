@@ -40,6 +40,10 @@ type prefixedJSONCodec struct {
 	prefix []byte
 }
 
+type fixedEncodeCodec struct {
+	encoded []byte
+}
+
 type reloadErrorWatcher struct {
 	*providertesting.Provider
 
@@ -87,6 +91,14 @@ func (c prefixedJSONCodec) Decode(data []byte, value any) error {
 		return errors.New("missing custom prefix")
 	}
 	return json.Unmarshal(bytes.TrimPrefix(data, c.prefix), value)
+}
+
+func (c fixedEncodeCodec) Encode(any) ([]byte, error) {
+	return append([]byte(nil), c.encoded...), nil
+}
+
+func (fixedEncodeCodec) Decode(data []byte, value any) error {
+	return json.Unmarshal(data, value)
 }
 
 func TestNewLoadsTypedConfigurationIntoMemory(t *testing.T) {
@@ -154,6 +166,64 @@ func TestNewRejectsInvalidConfiguration(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("New() error = nil, want decode failure")
+	}
+}
+
+func TestNewRejectsEmptyConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		data    []byte
+		options []sundial.Option
+	}{
+		{
+			name:    "empty JSON",
+			data:    []byte{},
+			options: nil,
+		},
+		{
+			name:    "whitespace JSON",
+			data:    []byte(" \n\t"),
+			options: nil,
+		},
+		{
+			name:    "empty YAML",
+			data:    []byte{},
+			options: []sundial.Option{sundial.WithCodec(yamlcodec.New())},
+		},
+		{
+			name:    "whitespace YAML",
+			data:    []byte(" \n\t"),
+			options: []sundial.Option{sundial.WithCodec(yamlcodec.New())},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := sundial.New[testConfig](
+				context.Background(),
+				providertesting.New(test.data),
+				test.options...,
+			)
+			if err == nil || !strings.Contains(err.Error(), "empty configuration document") {
+				t.Fatalf("New() error = %v, want empty configuration document", err)
+			}
+		})
+	}
+}
+
+func TestNewAcceptsEmptyObjectConfiguration(t *testing.T) {
+	t.Parallel()
+
+	_, err := sundial.New[testConfig](
+		t.Context(),
+		providertesting.New([]byte(`{}`)),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v, want nil", err)
 	}
 }
 
@@ -361,6 +431,42 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 	}
 }
 
+func TestPutRejectsEmptyEncodedConfiguration(t *testing.T) {
+	t.Parallel()
+
+	for _, encoded := range [][]byte{{}, []byte(" \n\t")} {
+		provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
+		configStore, err := sundial.New[testConfig](
+			t.Context(),
+			provider,
+			sundial.WithCodec(fixedEncodeCodec{encoded: encoded}),
+		)
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+
+		entry, err := configStore.Get()
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		entry.Value.Server.Port = 9090
+		putErr := configStore.Put(context.Background(), entry)
+		if putErr == nil || !strings.Contains(putErr.Error(), "empty configuration document") {
+			t.Fatalf("Put() error = %v, want empty configuration document", putErr)
+		}
+		if got := provider.PutIfRevisionCount(); got != 0 {
+			t.Fatalf("PutIfRevisionCount() = %d, want 0", got)
+		}
+		current, getErr := configStore.Get()
+		if getErr != nil {
+			t.Fatalf("Get() after failed Put error = %v", getErr)
+		}
+		if current.Value.Server.Port != 8080 {
+			t.Fatalf("port after failed Put = %d, want 8080", current.Value.Server.Port)
+		}
+	}
+}
+
 func TestPutFailureKeepsPreviousMemory(t *testing.T) {
 	t.Parallel()
 
@@ -409,6 +515,29 @@ func TestReloadFailureKeepsPreviousMemory(t *testing.T) {
 	provider.SetData([]byte(`{"server":`))
 	if reloadErr := configStore.Reload(context.Background()); reloadErr == nil {
 		t.Fatal("Reload() error = nil, want decode failure")
+	}
+	entry, err := configStore.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if entry.Value.Server.Port != 8080 {
+		t.Fatalf("port after failed reload = %d, want 8080", entry.Value.Server.Port)
+	}
+}
+
+func TestReloadRejectsEmptyConfigurationAndKeepsPreviousMemory(t *testing.T) {
+	t.Parallel()
+
+	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
+	configStore, err := sundial.New[testConfig](t.Context(), provider)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	provider.SetData([]byte(" \n\t"))
+	reloadErr := configStore.Reload(context.Background())
+	if reloadErr == nil || !strings.Contains(reloadErr.Error(), "empty configuration document") {
+		t.Fatalf("Reload() error = %v, want empty configuration document", reloadErr)
 	}
 	entry, err := configStore.Get()
 	if err != nil {

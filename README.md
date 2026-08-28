@@ -96,6 +96,7 @@ See the runnable [S3 example](examples/s3).
 ## Behavior
 
 - A missing document causes `New` or `Reload` to return `ErrNotFound`.
+- An empty or whitespace-only document causes `New`, `Put`, or `Reload` to return a decode error.
 - A failed or conflicting `Put` leaves the current in-memory snapshot unchanged.
 - A failed reload keeps the last valid snapshot.
 - Canceling the context passed to `New` stops automatic reload.

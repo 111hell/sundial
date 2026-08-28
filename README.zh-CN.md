@@ -96,6 +96,7 @@ if err := configStore.Put(ctx, entry); err != nil {
 ## 行为约定
 
 - 配置文档不存在时，`New` 或 `Reload` 返回 `ErrNotFound`。
+- 配置文档为空或仅包含空白字符时，`New`、`Put` 或 `Reload` 返回解码错误。
 - `Put` 失败或发生冲突时，当前内存快照保持不变。
 - 重新加载失败时，保留上一份有效配置。
 - 取消传给 `New` 的 context 会停止自动重新加载。
