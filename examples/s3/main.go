@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/sundayfun/sundial"
 	s3provider "github.com/sundayfun/sundial/provider/s3"
@@ -22,31 +25,46 @@ type serverConfig struct {
 }
 
 func main() {
-	port := flag.Int("port", -1, "update the server port; negative is read-only")
-	watch := flag.Bool("watch", false, "watch for external changes")
-	flag.Parse()
-
-	ctx := context.Background()
-	provider, err := s3provider.New(ctx, &s3provider.Config{
-		Region:        os.Getenv("AWS_REGION"),
-		Bucket:        os.Getenv("SUNDIAL_S3_BUCKET"),
-		Key:           os.Getenv("SUNDIAL_S3_KEY"),
-		Endpoint:      "",
-		UsePathStyle:  false,
-		WatchInterval: 0,
-	})
-	if err != nil {
+	if err := run(); err != nil {
 		log.Fatal(err)
 	}
+}
 
-	store, err := sundial.New[config](ctx, provider)
+func run() error {
+	port := flag.Int("port", -1, "update the server port; negative is read-only")
+	watch := flag.Bool("watch", false, "wait and print external changes")
+	flag.Parse()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	store, err := s3provider.New[config](
+		ctx,
+		&s3provider.Config{
+			Region:       os.Getenv("AWS_REGION"),
+			Bucket:       os.Getenv("SUNDIAL_S3_BUCKET"),
+			PathPrefix:   os.Getenv("SUNDIAL_S3_PATH_PREFIX"),
+			Key:          os.Getenv("SUNDIAL_S3_KEY"),
+			Endpoint:     "",
+			UsePathStyle: false,
+			// Zero uses the default 30-second interval.
+			WatchInterval: 0,
+		},
+		// Optional: observe automatic reload changes and errors.
+		sundial.WithOnChange(func() {
+			log.Print("configuration reloaded")
+		}),
+		sundial.WithOnError(func(reloadErr error) {
+			log.Printf("automatic reload: %v", reloadErr)
+		}),
+	)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	entry, err := store.Get()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("get loaded configuration: %w", err)
 	}
 	printEntry("loaded", entry)
 
@@ -54,40 +72,26 @@ func main() {
 		entry.Value.Server.Port = *port
 		putErr := store.Put(ctx, entry)
 		if putErr != nil {
-			if errors.Is(putErr, sundial.ErrConflict) {
-				log.Fatal("configuration changed before it could be saved")
+			if sundial.IsConflict(putErr) {
+				return errors.New("configuration changed before it could be saved")
 			}
-			log.Fatal(putErr)
+			return fmt.Errorf("put configuration: %w", putErr)
 		}
 
 		entry, err = store.Get()
 		if err != nil {
-			log.Fatal(err)
+			return fmt.Errorf("get updated configuration: %w", err)
 		}
 		printEntry("updated", entry)
 	}
 
 	if !*watch {
-		return
+		return nil
 	}
 
-	watchErr := store.Watch(
-		ctx,
-		sundial.WithOnChange(func() {
-			entry, getErr := store.Get()
-			if getErr != nil {
-				log.Printf("get changed configuration: %v", getErr)
-				return
-			}
-			printEntry("changed", entry)
-		}),
-		sundial.WithOnError(func(watchErr error) {
-			log.Printf("watch: %v", watchErr)
-		}),
-	)
-	if watchErr != nil {
-		log.Fatal(watchErr)
-	}
+	// Keep automatic reload running until SIGINT or SIGTERM cancels ctx.
+	<-ctx.Done()
+	return nil
 }
 
 func printEntry(event string, entry sundial.Entry[config]) {

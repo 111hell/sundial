@@ -24,12 +24,31 @@ const integrationWatchInterval = 20 * time.Millisecond
 
 var integrationBucketSequence atomic.Uint64
 
+type integrationConfig struct {
+	Port int `json:"port"`
+}
+
 // TestIntegrationS3Provider verifies the public Provider API against MinIO.
 // Set SUNDIAL_S3_ENDPOINT and AWS credentials to run it.
 func TestIntegrationS3Provider(t *testing.T) {
 	t.Parallel()
 
 	factory := newMinIOTestFactory(t, t.Context())
+
+	t.Run("new creates Sundial instance", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, fixture := newIntegrationFixture(t, factory, minIOFixtureConfig{
+			initialData: []byte(`{"port":8080}`),
+		})
+		store, err := s3provider.New[integrationConfig](ctx, fixture.config)
+		require.NoError(t, err)
+
+		entry, err := store.Get()
+		require.NoError(t, err)
+		assert.Equal(t, 8080, entry.Value.Port)
+		assert.NotEmpty(t, entry.Metadata.Revision)
+	})
 
 	t.Run("get missing object", func(t *testing.T) {
 		t.Parallel()
@@ -401,7 +420,7 @@ func (f *minIOTestFactory) newFixture(
 		UsePathStyle:  true,
 		WatchInterval: fixtureConfig.watchInterval,
 	}
-	provider, err := s3provider.New(ctx, config)
+	provider, err := s3provider.NewProvider(ctx, config)
 	require.NoError(t, err)
 	return &minIOFixture{
 		provider: provider,
@@ -415,7 +434,7 @@ func (f *minIOTestFactory) newFixture(
 func (f *minIOFixture) newProvider(t *testing.T, ctx context.Context) *s3provider.Provider {
 	t.Helper()
 
-	provider, err := s3provider.New(ctx, f.config)
+	provider, err := s3provider.NewProvider(ctx, f.config)
 	require.NoError(t, err)
 	return provider
 }

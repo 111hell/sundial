@@ -8,19 +8,38 @@ import (
 
 // Reload replaces the in-memory state when the Provider content changed.
 func (s *Sundial[T]) Reload(ctx context.Context) error {
-	_, err := s.reload(ctx)
-	return err
-}
-
-// Watch blocks until ctx is canceled or a native Provider watcher stops.
-func (s *Sundial[T]) Watch(ctx context.Context, optionFunctions ...WatchOption) error {
-	opts := normalizeWatchOptions(optionFunctions)
-
-	// Close the gap between New's initial load and watcher registration.
-	if err := s.watchReload(ctx, opts); errors.Is(err, context.Canceled) {
+	changed, err := s.reload(ctx)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.ErrorContext(ctx, "reload configuration", "error", err)
+		}
 		return err
 	}
+	if changed {
+		current := s.snapshot.Load()
+		s.logger.DebugContext(ctx, "reloaded configuration", "revision", current.metadata.Revision)
+	}
+	return nil
+}
 
+func (s *Sundial[T]) runWatch(ctx context.Context, opts reloadOptions) {
+	for {
+		err := s.watch(ctx, opts)
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			return
+		}
+
+		timer := time.NewTimer(opts.Interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *Sundial[T]) watch(ctx context.Context, opts reloadOptions) error {
 	if watcher, ok := s.provider.(Watcher); ok {
 		var reloadErr error
 		err := watcher.Watch(ctx, func() error {
@@ -28,13 +47,23 @@ func (s *Sundial[T]) Watch(ctx context.Context, optionFunctions ...WatchOption) 
 			return reloadErr
 		})
 		if err != nil && !errors.Is(err, context.Canceled) &&
-			!errors.Is(err, reloadErr) && opts.OnError != nil {
-			opts.OnError(err)
+			!errors.Is(err, reloadErr) {
+			s.logger.ErrorContext(
+				ctx,
+				"automatic reload failed",
+				"operation",
+				"watch provider",
+				"error",
+				err,
+			)
+			if opts.OnError != nil {
+				opts.OnError(err)
+			}
 		}
 		return err
 	}
 
-	ticker := time.NewTicker(s.watchInterval)
+	ticker := time.NewTicker(opts.Interval)
 	defer ticker.Stop()
 
 	for {
@@ -49,12 +78,20 @@ func (s *Sundial[T]) Watch(ctx context.Context, optionFunctions ...WatchOption) 
 	}
 }
 
-func (s *Sundial[T]) watchReload(ctx context.Context, opts watchOptions) error {
+func (s *Sundial[T]) watchReload(ctx context.Context, opts reloadOptions) error {
 	changed, err := s.reload(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return err
 		}
+		s.logger.ErrorContext(
+			ctx,
+			"automatic reload failed",
+			"operation",
+			"reload configuration",
+			"error",
+			err,
+		)
 		if opts.OnError != nil {
 			opts.OnError(err)
 		}
@@ -62,6 +99,10 @@ func (s *Sundial[T]) watchReload(ctx context.Context, opts watchOptions) error {
 	}
 	if changed && opts.OnChange != nil {
 		opts.OnChange()
+	}
+	if changed {
+		current := s.snapshot.Load()
+		s.logger.DebugContext(ctx, "reloaded configuration", "revision", current.metadata.Revision)
 	}
 	return nil
 }

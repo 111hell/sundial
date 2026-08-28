@@ -10,7 +10,7 @@ Sundial 是一个轻量、可扩展、类型安全的 Go 配置 SDK，提供内�
 - **类型安全访问**：应用直接读取自己定义的配置结构体，不再使用字符串路径和 `any`。
 - **快速读取**：`Get` 只读取内存快照。
 - **持久化写入**：`Put` 有条件地保存完整的强类型配置文档。
-- **实时更新**：`Watch` 将外部变化同步到内存。
+- **实时更新**：自动重新加载将外部变化同步到内存。
 - **存储和格式可扩展**：配置源实现 `Provider`；默认使用 JSON，其他格式通过 Codec 扩展。
 
 一个 Sundial 实例管理一份完整配置文档。
@@ -35,22 +35,17 @@ type Config struct {
 }
 ```
 
-以下以 S3 Provider 为例。先创建 Provider，再创建 Sundial；`New` 会加载并验证
-初始配置：
+以下以 S3 为例：
 
 ```go
-ctx := context.Background()
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
 
-provider, err := s3provider.New(ctx, &s3provider.Config{
+configStore, err := s3provider.New[Config](ctx, &s3provider.Config{
 	Region: "us-east-1",
 	Bucket: "my-config-bucket",
 	Key:    "production/app.json",
 })
-if err != nil {
-	log.Fatal(err)
-}
-
-configStore, err := sundial.New[Config](ctx, provider)
 if err != nil {
 	log.Fatal(err)
 }
@@ -76,7 +71,7 @@ fmt.Println(entry.Value.Server.Port)
 ```go
 entry.Value.Server.Port = 9090
 if err := configStore.Put(ctx, entry); err != nil {
-	if errors.Is(err, sundial.ErrConflict) {
+	if sundial.IsConflict(err) {
 		// 重新加载、应用本次修改，然后按需重试。
 		log.Print("保存前配置已发生变化")
 		return
@@ -88,30 +83,10 @@ if err := configStore.Put(ctx, entry); err != nil {
 `Put` 使用 `entry.Metadata` 中的 Revision；Revision 过期时返回
 `ErrConflict`。它不会自动合并或重试。
 
-## 监听变化
-
-`Watch` 会重新加载 Provider 中的变更，使内存快照保持最新：
-
-```go
-err := configStore.Watch(
-	ctx,
-	sundial.WithOnChange(func() {
-		log.Print("配置已更新")
-	}),
-	sundial.WithOnError(func(err error) {
-		log.Printf("监听错误: %v", err)
-	}),
-)
-if err != nil && !errors.Is(err, context.Canceled) {
-	log.Fatal(err)
-}
-```
-
 默认使用 JSON；其他格式可通过 `WithCodec` 配置。具体存储实现位于
 `provider/<source>`。
 
-完整的初始化、读取、条件写入和监听流程见可运行的
-[S3 示例](examples/s3)。
+完整示例见 [S3 示例](examples/s3)。
 
 ## 参考资料
 
@@ -123,6 +98,7 @@ if err != nil && !errors.Is(err, context.Canceled) {
 - 配置文档不存在时，`New` 或 `Reload` 返回 `ErrNotFound`。
 - `Put` 失败或发生冲突时，当前内存快照保持不变。
 - 重新加载失败时，保留上一份有效配置。
+- 取消传给 `New` 的 context 会停止自动重新加载。
 - `Get` 支持并发调用。同一实例的 `Put` 会串行执行，陈旧 Revision 会返回
   `ErrConflict`。
 

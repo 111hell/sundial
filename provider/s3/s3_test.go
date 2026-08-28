@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -72,13 +74,14 @@ func (r failingReader) Read([]byte) (int, error) {
 	return 0, r.err
 }
 
-func TestNewCreatesAWSClientFromConfig(t *testing.T) {
+func TestNewProviderCreatesAWSClientFromConfig(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test-access-key")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
 
-	provider, err := New(context.Background(), &Config{
+	provider, err := NewProvider(context.Background(), &Config{
 		Region:       "us-east-1",
 		Bucket:       "configs",
+		PathPrefix:   "service-a/production",
 		Key:          "app.json",
 		Endpoint:     "https://s3.example.com",
 		UsePathStyle: true,
@@ -92,7 +95,64 @@ func TestNewCreatesAWSClientFromConfig(t *testing.T) {
 	require.NotNil(t, options.BaseEndpoint)
 	assert.Equal(t, "https://s3.example.com", *options.BaseEndpoint)
 	assert.True(t, options.UsePathStyle)
+	assert.Equal(t, "service-a/production/app.json", provider.key)
 	assert.Equal(t, defaultWatchInterval, provider.watchInterval)
+}
+
+func TestPathPrefixWithPathStyle(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-access-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
+
+	requestPath := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestPath <- request.URL.EscapedPath()
+		writer.Header().Set("ETag", `"revision-1"`)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := NewProvider(context.Background(), &Config{
+		Region:       "us-east-1",
+		Bucket:       "configs",
+		PathPrefix:   "service-a/production",
+		Key:          "app.json",
+		Endpoint:     server.URL,
+		UsePathStyle: true,
+	})
+	require.NoError(t, err)
+
+	_, err = provider.Put(context.Background(), []byte("config"))
+	require.NoError(t, err)
+	assert.Equal(t, "/configs/service-a/production/app.json", <-requestPath)
+}
+
+func TestNewRejectsInvalidExistingObject(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-access-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
+
+	requestTarget := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestTarget <- request.Method + " " + request.URL.EscapedPath()
+		writer.Header().Set("ETag", `"revision-1"`)
+		writer.WriteHeader(http.StatusOK)
+		if _, writeErr := writer.Write([]byte(`{"enabled":`)); writeErr != nil {
+			return
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := New[struct {
+		Enabled bool `json:"enabled"`
+	}](t.Context(), &Config{
+		Region:       "us-east-1",
+		Bucket:       "configs",
+		PathPrefix:   "service-a/production",
+		Key:          "app.json",
+		Endpoint:     server.URL,
+		UsePathStyle: true,
+	})
+	require.ErrorContains(t, err, "decode configuration")
+	assert.Equal(t, "GET /configs/service-a/production/app.json", <-requestTarget)
 }
 
 func TestNewValidatesConfig(t *testing.T) {
@@ -132,8 +192,57 @@ func TestNewValidatesConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := New(context.Background(), tt.config)
+			_, err := New[struct{}](context.Background(), tt.config)
 			require.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestNewProviderAppliesPathPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		pathPrefix string
+		key        string
+		want       string
+	}{
+		{
+			name: "empty prefix preserves key",
+			key:  "production/app.json",
+			want: "production/app.json",
+		},
+		{
+			name:       "prefix namespaces key",
+			pathPrefix: "service-a/production",
+			key:        "app.json",
+			want:       "service-a/production/app.json",
+		},
+		{
+			name:       "boundary slashes are normalized",
+			pathPrefix: "service-a/production/",
+			key:        "/app.json",
+			want:       "service-a/production/app.json",
+		},
+		{
+			name:       "key contents are not cleaned",
+			pathPrefix: "service-a",
+			key:        "../app.json",
+			want:       "service-a/../app.json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := newProvider(&testClient{}, &Config{
+				Bucket:     "configs",
+				PathPrefix: tt.pathPrefix,
+				Key:        tt.key,
+			})
+
+			assert.Equal(t, tt.want, provider.key)
 		})
 	}
 }

@@ -10,7 +10,7 @@ in-memory reads, persistent writes, and live updates.
 - **Type-safe access** — applications read their own configuration struct instead of string paths and `any` values.
 - **Fast reads** — `Get` reads only from an in-memory snapshot.
 - **Persistent writes** — `Put` conditionally saves one complete typed configuration document.
-- **Live updates** — `Watch` keeps memory synchronized with external changes.
+- **Live updates** — automatic reload keeps memory synchronized with external changes.
 - **Extensible storage and formats** — storage sources implement `Provider`; JSON works by default and other formats use codecs.
 
 One Sundial instance manages one complete configuration document.
@@ -35,22 +35,17 @@ type Config struct {
 }
 ```
 
-The following example uses the S3 Provider. Create the Provider, then create
-Sundial. `New` loads and validates the initial configuration:
+The following example uses S3:
 
 ```go
-ctx := context.Background()
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
 
-provider, err := s3provider.New(ctx, &s3provider.Config{
+configStore, err := s3provider.New[Config](ctx, &s3provider.Config{
 	Region: "us-east-1",
 	Bucket: "my-config-bucket",
 	Key:    "production/app.json",
 })
-if err != nil {
-	log.Fatal(err)
-}
-
-configStore, err := sundial.New[Config](ctx, provider)
 if err != nil {
 	log.Fatal(err)
 }
@@ -76,7 +71,7 @@ Modify the value and pass the same `Entry` back for a conditional write:
 ```go
 entry.Value.Server.Port = 9090
 if err := configStore.Put(ctx, entry); err != nil {
-	if errors.Is(err, sundial.ErrConflict) {
+	if sundial.IsConflict(err) {
 		// Reload, reapply the change, and retry if appropriate.
 		log.Print("configuration changed before it could be saved")
 		return
@@ -88,31 +83,10 @@ if err := configStore.Put(ctx, entry); err != nil {
 `Put` uses the revision in `entry.Metadata`; a stale revision returns
 `ErrConflict`. It does not merge or retry automatically.
 
-## Watch for changes
-
-`Watch` reloads changed Provider content and keeps the in-memory snapshot up to
-date:
-
-```go
-err := configStore.Watch(
-	ctx,
-	sundial.WithOnChange(func() {
-		log.Print("configuration updated")
-	}),
-	sundial.WithOnError(func(err error) {
-		log.Printf("watch error: %v", err)
-	}),
-)
-if err != nil && !errors.Is(err, context.Canceled) {
-	log.Fatal(err)
-}
-```
-
 JSON is used by default. Other formats can be configured with `WithCodec`.
 Storage implementations live under `provider/<source>`.
 
-See the runnable [S3 example](examples/s3) for complete setup, read, conditional
-write, and watch flows.
+See the runnable [S3 example](examples/s3).
 
 ## References
 
@@ -124,6 +98,7 @@ write, and watch flows.
 - A missing document causes `New` or `Reload` to return `ErrNotFound`.
 - A failed or conflicting `Put` leaves the current in-memory snapshot unchanged.
 - A failed reload keeps the last valid snapshot.
+- Canceling the context passed to `New` stops automatic reload.
 - `Get` is safe for concurrent use. `Put` calls are serialized per instance,
   and stale revisions return `ErrConflict`.
 

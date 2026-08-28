@@ -174,6 +174,10 @@ func (p *WatchProvider) Change(data []byte) {
 
 // Watch waits for simulated changes.
 func (p *WatchProvider) Watch(ctx context.Context, notify func() error) error {
+	if err := notify(); errors.Is(err, context.Canceled) {
+		return err
+	}
+
 	for {
 		select {
 		case <-ctx.Done():

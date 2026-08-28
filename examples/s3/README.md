@@ -11,7 +11,8 @@ default credential chain:
 ```sh
 export AWS_REGION=us-east-1
 export SUNDIAL_S3_BUCKET=my-config-bucket
-export SUNDIAL_S3_KEY=production/app.json
+export SUNDIAL_S3_PATH_PREFIX=production
+export SUNDIAL_S3_KEY=app.json
 
 go run ./examples/s3
 ```

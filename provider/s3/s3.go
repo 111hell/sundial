@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -21,6 +22,8 @@ type Config struct {
 	Region string
 	// Bucket contains the configuration object.
 	Bucket string
+	// PathPrefix optionally namespaces Key within Bucket.
+	PathPrefix string
 	// Key identifies the configuration object in Bucket.
 	Key string
 	// Endpoint optionally overrides the standard AWS S3 endpoint.
@@ -64,8 +67,21 @@ var (
 	_ s3Client         = (*awss3.Client)(nil)
 )
 
-// New creates an S3 Provider using the AWS SDK default configuration chain.
-func New(ctx context.Context, cfg *Config) (*Provider, error) {
+func New[T any](
+	ctx context.Context,
+	cfg *Config,
+	opts ...sundial.Option,
+) (*sundial.Sundial[T], error) {
+	provider, err := NewProvider(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return sundial.New[T](ctx, provider, opts...)
+}
+
+// NewProvider creates an S3 Provider using the AWS SDK default configuration chain.
+func NewProvider(ctx context.Context, cfg *Config) (*Provider, error) {
 	if cfg == nil {
 		return nil, ErrConfigRequired
 	}
@@ -105,9 +121,16 @@ func newProvider(client s3Client, cfg *Config) *Provider {
 	return &Provider{
 		client:        client,
 		bucket:        cfg.Bucket,
-		key:           cfg.Key,
+		key:           prefixedKey(cfg.PathPrefix, cfg.Key),
 		watchInterval: cfg.WatchInterval,
 	}
+}
+
+func prefixedKey(pathPrefix, key string) string {
+	if pathPrefix == "" {
+		return key
+	}
+	return strings.TrimRight(pathPrefix, "/") + "/" + strings.TrimLeft(key, "/")
 }
 
 // Get reads the current object and uses its ETag as the revision.
