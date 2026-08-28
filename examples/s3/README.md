@@ -25,9 +25,3 @@ go run ./examples/s3 -port 9090
 
 The update succeeds only if the object has not changed since it was loaded. A
 concurrent update is reported as a conflict and is not retried automatically.
-
-Watch for external changes until `Ctrl-C`:
-
-```sh
-go run ./examples/s3 -watch
-```

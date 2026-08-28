@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/sundayfun/sundial"
 	s3provider "github.com/sundayfun/sundial/provider/s3"
@@ -32,11 +30,10 @@ func main() {
 
 func run() error {
 	port := flag.Int("port", -1, "update the server port; negative is read-only")
-	watch := flag.Bool("watch", false, "wait and print external changes")
 	flag.Parse()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	store, err := s3provider.New[config](
 		ctx,
@@ -50,12 +47,13 @@ func run() error {
 			// Zero uses the default 30-second interval.
 			WatchInterval: 0,
 		},
-		// Optional: observe automatic reload changes and errors.
+		// Optional: called after a changed configuration is reloaded.
 		sundial.WithOnChange(func() {
 			log.Print("configuration reloaded")
 		}),
+		// Optional: called when automatic reload fails.
 		sundial.WithOnError(func(reloadErr error) {
-			log.Printf("automatic reload: %v", reloadErr)
+			log.Printf("reload configuration: %v", reloadErr)
 		}),
 	)
 	if err != nil {
@@ -85,12 +83,6 @@ func run() error {
 		printEntry("updated", entry)
 	}
 
-	if !*watch {
-		return nil
-	}
-
-	// Keep automatic reload running until SIGINT or SIGTERM cancels ctx.
-	<-ctx.Done()
 	return nil
 }
 
