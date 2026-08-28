@@ -6,25 +6,15 @@ import (
 	"time"
 )
 
-// Reload replaces the in-memory state when the Provider content changed.
-func (s *Sundial[T]) Reload(ctx context.Context) error {
-	changed, err := s.reload(ctx)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.logger.ErrorContext(ctx, "reload configuration", "error", err)
-		}
-		return err
-	}
-	if changed {
-		current := s.snapshot.Load()
-		s.logger.DebugContext(ctx, "reloaded configuration", "revision", current.metadata.Revision)
-	}
-	return nil
-}
-
-func (s *Sundial[T]) runWatch(ctx context.Context, opts reloadOptions) {
+func (s *Sundial[T]) watch(ctx context.Context, opts reloadOptions) {
+	watcher, native := s.provider.(Watcher)
 	for {
-		err := s.watch(ctx, opts)
+		var err error
+		if native {
+			err = s.runWatcher(ctx, watcher, opts)
+		} else {
+			err = s.poll(ctx, opts)
+		}
 		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 			return
 		}
@@ -39,30 +29,30 @@ func (s *Sundial[T]) runWatch(ctx context.Context, opts reloadOptions) {
 	}
 }
 
-func (s *Sundial[T]) watch(ctx context.Context, opts reloadOptions) error {
-	if watcher, ok := s.provider.(Watcher); ok {
-		var reloadErr error
-		err := watcher.Watch(ctx, func() error {
-			reloadErr = s.watchReload(ctx, opts)
-			return reloadErr
-		})
-		if err != nil && !errors.Is(err, context.Canceled) &&
-			!errors.Is(err, reloadErr) {
-			s.logger.ErrorContext(
-				ctx,
-				"automatic reload failed",
-				"operation",
-				"watch provider",
-				"error",
-				err,
-			)
-			if opts.OnError != nil {
-				opts.OnError(err)
-			}
+func (s *Sundial[T]) runWatcher(ctx context.Context, watcher Watcher, opts reloadOptions) error {
+	var reloadErr error
+	err := watcher.Watch(ctx, func() error {
+		reloadErr = s.autoReload(ctx, opts)
+		return reloadErr
+	})
+	if err != nil && !errors.Is(err, context.Canceled) &&
+		!errors.Is(err, reloadErr) {
+		s.logger.ErrorContext(
+			ctx,
+			"automatic reload failed",
+			"operation",
+			"watch provider",
+			"error",
+			err,
+		)
+		if opts.OnError != nil {
+			opts.OnError(err)
 		}
-		return err
 	}
+	return err
+}
 
+func (s *Sundial[T]) poll(ctx context.Context, opts reloadOptions) error {
 	ticker := time.NewTicker(opts.Interval)
 	defer ticker.Stop()
 
@@ -71,14 +61,14 @@ func (s *Sundial[T]) watch(ctx context.Context, opts reloadOptions) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := s.watchReload(ctx, opts); errors.Is(err, context.Canceled) {
+			if err := s.autoReload(ctx, opts); errors.Is(err, context.Canceled) {
 				return err
 			}
 		}
 	}
 }
 
-func (s *Sundial[T]) watchReload(ctx context.Context, opts reloadOptions) error {
+func (s *Sundial[T]) autoReload(ctx context.Context, opts reloadOptions) error {
 	changed, err := s.reload(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -105,24 +95,4 @@ func (s *Sundial[T]) watchReload(ctx context.Context, opts reloadOptions) error 
 		s.logger.DebugContext(ctx, "reloaded configuration", "revision", current.metadata.Revision)
 	}
 	return nil
-}
-
-func (s *Sundial[T]) reload(ctx context.Context) (bool, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
-	next, err := s.loadSnapshot(ctx)
-	if err != nil {
-		return false, err
-	}
-	current := s.snapshot.Load()
-	if next.hash == current.hash {
-		if next.metadata.Revision != current.metadata.Revision {
-			s.snapshot.Store(next)
-		}
-		return false, nil
-	}
-
-	s.snapshot.Store(next)
-	return true, nil
 }

@@ -46,7 +46,7 @@ func New[T any](ctx context.Context, provider Provider, opts ...Option) (*Sundia
 	s.snapshot.Store(loaded)
 	s.logger.DebugContext(ctx, "loaded configuration", "revision", loaded.metadata.Revision)
 
-	go s.runWatch(ctx, normalized.Reload)
+	go s.watch(ctx, normalized.Reload)
 
 	return s, nil
 }
