@@ -49,10 +49,30 @@ if err != nil {
 }
 ```
 
+### S3 provider
+
+```go
+import s3provider "github.com/sundayfun/sundial/provider/s3"
+
+provider, err := s3provider.New(ctx, &s3provider.Config{
+	Region: "us-east-1",
+	Bucket: "my-config-bucket",
+	Key:    "production/app.json",
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+configStore, err := sundial.New[Config](ctx, provider)
+if err != nil {
+	log.Fatal(err)
+}
+```
+
 ### Read
 
 `Get` returns an `Entry` from memory without calling the Provider. Its `Value`
-is detached, and its `Revision` belongs to the same snapshot:
+is detached, and its `Metadata.Revision` belongs to the same snapshot:
 
 ```go
 entry, err := configStore.Get()
@@ -84,8 +104,8 @@ if err := configStore.Put(ctx, entry); err != nil {
 }
 ```
 
-`Put` uses `entry.Revision` and returns `ErrConflict` if another writer wins. It
-does not merge or retry automatically.
+`Put` uses `entry.Metadata.Revision` and returns `ErrConflict` if another writer
+wins. It does not merge or retry automatically.
 
 ## Watch for changes
 
@@ -115,6 +135,10 @@ go func() {
 
 Providers may implement native change notifications through `Watcher`. Otherwise, Sundial polls the Provider every 30 seconds by default; use `WithWatchInterval` to change the interval.
 
+The S3 Provider implements `Watcher` by polling object metadata. It calls
+`HeadObject` on its `Config.WatchInterval`; after startup synchronization, it
+downloads the object only when the ETag changes. The interval defaults to 30 seconds.
+
 External content is decoded as the application's configuration type before publication. A failed reload keeps the last valid snapshot and is reported through `WithOnError`.
 
 ## Configuration formats
@@ -135,19 +159,19 @@ Custom formats can implement `codec.Codec`.
 
 ## Build a provider
 
-A Provider loads and conditionally saves one complete configuration document:
+A Provider reads and writes one complete configuration document:
 
 ```go
 type Provider interface {
-	Load(ctx context.Context) ([]byte, Revision, error)
-	Save(ctx context.Context, data []byte, expectedRevision Revision) (Revision, error)
+	Get(ctx context.Context) ([]byte, Metadata, error)
+	Put(ctx context.Context, data []byte) (Metadata, error)
+	PutIfRevision(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
 }
 ```
 
-The data and `Revision` returned by `Load` must belong to the same configuration
-state. `Save` must replace the configuration only when `expectedRevision`
-matches the current revision and return `ErrConflict` otherwise. The Provider
-must enforce this check atomically.
+The data and `Metadata` returned by `Get` must belong to the same configuration
+state. `Put` writes without checking the current revision. `PutIfRevision`
+requires a non-empty matching revision and returns `ErrConflict` otherwise.
 
 For native change notifications, it can also implement:
 
@@ -166,7 +190,7 @@ Concrete storage implementations live under `provider/<source>`. The core packag
 
 ## Behavior
 
-- A missing document starts with the zero value of the application's configuration type.
+- A missing document causes `New` or `Reload` to return `ErrNotFound`.
 - A failed or conflicting `Put` leaves the current in-memory snapshot unchanged.
 - A failed reload keeps the last valid snapshot.
 - `Get` is safe for concurrent use. `Put` calls are serialized per instance, and stale revisions return `ErrConflict`.

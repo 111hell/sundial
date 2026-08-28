@@ -12,14 +12,16 @@ import (
 
 // Provider is a concurrency-safe test Provider without native watch support.
 type Provider struct {
-	mu        sync.RWMutex
-	data      []byte
-	exists    bool
-	loadErr   error
-	saveErr   error
-	loadCount int
-	saveCount int
-	revision  uint64
+	mu                 sync.RWMutex
+	data               []byte
+	exists             bool
+	getErr             error
+	putErr             error
+	putIfRevisionErr   error
+	getCount           int
+	putCount           int
+	putIfRevisionCount int
+	revision           uint64
 }
 
 // New creates a Provider. A nil document represents a missing configuration.
@@ -34,14 +36,14 @@ func New(data []byte) *Provider {
 	return provider
 }
 
-// Load returns the current test document.
-func (p *Provider) Load(context.Context) ([]byte, sundial.Metadata, error) {
+// Get returns the current test document.
+func (p *Provider) Get(context.Context) ([]byte, sundial.Metadata, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.loadCount++
-	if p.loadErr != nil {
-		return nil, sundial.Metadata{}, p.loadErr
+	p.getCount++
+	if p.getErr != nil {
+		return nil, sundial.Metadata{}, p.getErr
 	}
 	if !p.exists {
 		return nil, sundial.Metadata{}, sundial.ErrNotFound
@@ -49,8 +51,24 @@ func (p *Provider) Load(context.Context) ([]byte, sundial.Metadata, error) {
 	return cloneBytes(p.data), sundial.Metadata{Revision: p.currentRevision()}, nil
 }
 
-// Save replaces the current test document when expectedMetadata.Revision is current.
-func (p *Provider) Save(
+// Put writes the current test document without checking its revision.
+func (p *Provider) Put(_ context.Context, data []byte) (sundial.Metadata, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.putCount++
+	if p.putErr != nil {
+		return sundial.Metadata{}, p.putErr
+	}
+	p.revision++
+	p.data = cloneBytes(data)
+	p.exists = true
+	return sundial.Metadata{Revision: p.currentRevision()}, nil
+}
+
+// PutIfRevision replaces the current test document when
+// expectedMetadata.Revision is current.
+func (p *Provider) PutIfRevision(
 	_ context.Context,
 	data []byte,
 	expectedMetadata sundial.Metadata,
@@ -58,11 +76,11 @@ func (p *Provider) Save(
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.saveCount++
-	if p.saveErr != nil {
-		return sundial.Metadata{}, p.saveErr
+	p.putIfRevisionCount++
+	if p.putIfRevisionErr != nil {
+		return sundial.Metadata{}, p.putIfRevisionErr
 	}
-	if expectedMetadata.Revision != p.currentRevision() {
+	if expectedMetadata.Revision == "" || expectedMetadata.Revision != p.currentRevision() {
 		return sundial.Metadata{}, sundial.ErrConflict
 	}
 	p.revision++
@@ -81,18 +99,25 @@ func (p *Provider) SetData(data []byte) {
 	p.exists = data != nil
 }
 
-// SetLoadError configures Load to fail.
-func (p *Provider) SetLoadError(err error) {
+// SetGetError configures Get to fail.
+func (p *Provider) SetGetError(err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.loadErr = err
+	p.getErr = err
 }
 
-// SetSaveError configures Save to fail.
-func (p *Provider) SetSaveError(err error) {
+// SetPutError configures Put to fail.
+func (p *Provider) SetPutError(err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.saveErr = err
+	p.putErr = err
+}
+
+// SetPutIfRevisionError configures PutIfRevision to fail.
+func (p *Provider) SetPutIfRevisionError(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.putIfRevisionErr = err
 }
 
 // Data returns a copy of the current test document.
@@ -102,18 +127,25 @@ func (p *Provider) Data() []byte {
 	return cloneBytes(p.data)
 }
 
-// LoadCount returns the number of Load calls.
-func (p *Provider) LoadCount() int {
+// GetCount returns the number of Get calls.
+func (p *Provider) GetCount() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.loadCount
+	return p.getCount
 }
 
-// SaveCount returns the number of Save calls.
-func (p *Provider) SaveCount() int {
+// PutCount returns the number of Put calls.
+func (p *Provider) PutCount() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.saveCount
+	return p.putCount
+}
+
+// PutIfRevisionCount returns the number of PutIfRevision calls.
+func (p *Provider) PutIfRevisionCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.putIfRevisionCount
 }
 
 // WatchProvider adds native watch support to Provider.

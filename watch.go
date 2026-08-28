@@ -17,15 +17,18 @@ func (s *Sundial[T]) Watch(ctx context.Context, optionFunctions ...WatchOption) 
 	opts := normalizeWatchOptions(optionFunctions)
 
 	// Close the gap between New's initial load and watcher registration.
-	if err := s.watchReload(ctx, opts); err != nil {
+	if err := s.watchReload(ctx, opts); errors.Is(err, context.Canceled) {
 		return err
 	}
 
 	if watcher, ok := s.provider.(Watcher); ok {
+		var reloadErr error
 		err := watcher.Watch(ctx, func() error {
-			return s.watchReload(ctx, opts)
+			reloadErr = s.watchReload(ctx, opts)
+			return reloadErr
 		})
-		if err != nil && !errors.Is(err, context.Canceled) && opts.OnError != nil {
+		if err != nil && !errors.Is(err, context.Canceled) &&
+			!errors.Is(err, reloadErr) && opts.OnError != nil {
 			opts.OnError(err)
 		}
 		return err
@@ -39,7 +42,7 @@ func (s *Sundial[T]) Watch(ctx context.Context, optionFunctions ...WatchOption) 
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := s.watchReload(ctx, opts); err != nil {
+			if err := s.watchReload(ctx, opts); errors.Is(err, context.Canceled) {
 				return err
 			}
 		}
@@ -55,7 +58,7 @@ func (s *Sundial[T]) watchReload(ctx context.Context, opts watchOptions) error {
 		if opts.OnError != nil {
 			opts.OnError(err)
 		}
-		return nil
+		return err
 	}
 	if changed && opts.OnChange != nil {
 		opts.OnChange()

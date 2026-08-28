@@ -48,10 +48,30 @@ if err != nil {
 }
 ```
 
+### S3 Provider
+
+```go
+import s3provider "github.com/sundayfun/sundial/provider/s3"
+
+provider, err := s3provider.New(ctx, &s3provider.Config{
+	Region: "us-east-1",
+	Bucket: "my-config-bucket",
+	Key:    "production/app.json",
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+configStore, err := sundial.New[Config](ctx, provider)
+if err != nil {
+	log.Fatal(err)
+}
+```
+
 ### 读取
 
-`Get` 从内存返回 `Entry`，不会访问 Provider。`Value` 是独立副本，`Revision`
-来自同一快照：
+`Get` 从内存返回 `Entry`，不会访问 Provider。`Value` 是独立副本，
+`Metadata.Revision` 来自同一快照：
 
 ```go
 entry, err := configStore.Get()
@@ -83,8 +103,8 @@ if err := configStore.Put(ctx, entry); err != nil {
 }
 ```
 
-`Put` 使用 `entry.Revision`；如果其他写入先成功，则返回 `ErrConflict`。它不会
-自动合并或重试。
+`Put` 使用 `entry.Metadata.Revision`；如果其他写入先成功，则返回
+`ErrConflict`。它不会自动合并或重试。
 
 ## 监听变化
 
@@ -114,6 +134,10 @@ go func() {
 
 Provider 可以通过实现 `Watcher` 提供原生变化通知；否则 Sundial 默认每 30 秒轮询一次 Provider，可通过 `WithWatchInterval` 修改间隔。
 
+S3 Provider 通过轮询对象元数据实现 `Watcher`：按照
+`Config.WatchInterval` 调用 `HeadObject`；完成启动同步后，仅在 ETag
+发生变化时下载对象。该间隔默认为 30 秒。
+
 外部内容必须成功解码为应用的配置类型后才会发布。重新加载失败时保留上一份有效快照，并通过 `WithOnError` 报告错误。
 
 ## 配置格式
@@ -134,18 +158,19 @@ configStore, err := sundial.New[Config](
 
 ## 实现 Provider
 
-Provider 负责加载并有条件地保存一份完整配置：
+Provider 负责读取和写入一份完整配置：
 
 ```go
 type Provider interface {
-	Load(ctx context.Context) ([]byte, Revision, error)
-	Save(ctx context.Context, data []byte, expectedRevision Revision) (Revision, error)
+	Get(ctx context.Context) ([]byte, Metadata, error)
+	Put(ctx context.Context, data []byte) (Metadata, error)
+	PutIfRevision(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
 }
 ```
 
-`Load` 返回的数据和 `Revision` 必须对应同一配置状态。只有 `expectedRevision`
-与当前配置的 `Revision` 匹配时，`Save` 才能替换配置；否则返回 `ErrConflict`。Provider
-必须原子地完成这项检查。
+`Get` 返回的数据和 `Metadata` 必须对应同一配置状态。`Put` 不检查当前
+Revision；`PutIfRevision` 要求非空 Revision 与当前状态匹配，否则返回
+`ErrConflict`。
 
 需要原生监听能力时，还可以实现：
 
@@ -164,7 +189,7 @@ type Watcher interface {
 
 ## 行为约定
 
-- 配置文档不存在时，从应用配置类型的零值开始。
+- 配置文档不存在时，`New` 或 `Reload` 返回 `ErrNotFound`。
 - `Put` 失败或发生冲突时，当前内存快照保持不变。
 - 重新加载失败时，保留上一份有效配置。
 - `Get` 支持并发调用。同一实例的 `Put` 会串行执行，陈旧 `Revision` 会返回 `ErrConflict`。
