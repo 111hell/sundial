@@ -7,8 +7,9 @@ import (
 )
 
 const (
+	// defaultPollingInterval is the fallback interval for Providers without Watch support.
 	defaultPollingInterval = 30 * time.Second
-	// watcherRetryInterval delays restarting any Watcher that exits.
+	// watcherRetryInterval is the retry delay for any Watcher that exits.
 	watcherRetryInterval = 30 * time.Second
 )
 

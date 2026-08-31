@@ -10,6 +10,7 @@ import (
 	"github.com/aws/smithy-go"
 )
 
+// defaultWatchInterval is the default S3 ETag polling interval.
 const defaultWatchInterval = 30 * time.Second
 
 // Watch polls object metadata and uses ETag changes to avoid unnecessary reloads.
