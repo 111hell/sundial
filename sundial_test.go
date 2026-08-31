@@ -208,8 +208,8 @@ func TestNewRejectsEmptyConfiguration(t *testing.T) {
 				providertesting.New(test.data),
 				test.options...,
 			)
-			if err == nil || !strings.Contains(err.Error(), "empty configuration document") {
-				t.Fatalf("New() error = %v, want empty configuration document", err)
+			if !errors.Is(err, sundial.ErrEmptyDocument) {
+				t.Fatalf("New() error = %v, want ErrEmptyDocument", err)
 			}
 		})
 	}
@@ -451,8 +451,8 @@ func TestPutRejectsEmptyEncodedConfiguration(t *testing.T) {
 		}
 		entry.Value.Server.Port = 9090
 		putErr := configStore.Put(context.Background(), entry)
-		if putErr == nil || !strings.Contains(putErr.Error(), "empty configuration document") {
-			t.Fatalf("Put() error = %v, want empty configuration document", putErr)
+		if !errors.Is(putErr, sundial.ErrEmptyDocument) {
+			t.Fatalf("Put() error = %v, want ErrEmptyDocument", putErr)
 		}
 		if got := provider.PutIfRevisionCount(); got != 0 {
 			t.Fatalf("PutIfRevisionCount() = %d, want 0", got)
@@ -536,8 +536,8 @@ func TestReloadRejectsEmptyConfigurationAndKeepsPreviousMemory(t *testing.T) {
 
 	provider.SetData([]byte(" \n\t"))
 	reloadErr := configStore.Reload(context.Background())
-	if reloadErr == nil || !strings.Contains(reloadErr.Error(), "empty configuration document") {
-		t.Fatalf("Reload() error = %v, want empty configuration document", reloadErr)
+	if !errors.Is(reloadErr, sundial.ErrEmptyDocument) {
+		t.Fatalf("Reload() error = %v, want ErrEmptyDocument", reloadErr)
 	}
 	entry, err := configStore.Get()
 	if err != nil {
@@ -607,38 +607,6 @@ func TestGetReturnsDetachedConfiguration(t *testing.T) {
 	}
 	if current.Labels["region"] != "east" {
 		t.Fatalf("detached region = %q, want east", current.Labels["region"])
-	}
-}
-
-func TestAutomaticPollingReloadsExternalChanges(t *testing.T) {
-	t.Parallel()
-
-	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
-	changed := make(chan struct{}, 1)
-	configStore, err := sundial.New[testConfig](
-		t.Context(),
-		provider,
-		sundial.WithReloadInterval(5*time.Millisecond),
-		sundial.WithOnChange(func() {
-			changed <- struct{}{}
-		}),
-	)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	provider.SetData([]byte(`{"server":{"port":9090}}`))
-	select {
-	case <-changed:
-	case <-time.After(time.Second):
-		t.Fatal("automatic reload did not report external change")
-	}
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if entry.Value.Server.Port != 9090 {
-		t.Fatalf("watched port = %d, want 9090", entry.Value.Server.Port)
 	}
 }
 

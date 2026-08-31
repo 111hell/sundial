@@ -2,13 +2,10 @@ package sundial
 
 import (
 	"log/slog"
-	"time"
 
 	"github.com/sundayfun/sundial/codec"
 	jsoncodec "github.com/sundayfun/sundial/codec/json"
 )
-
-const defaultReloadInterval = 30 * time.Second
 
 type options struct {
 	Codec  codec.Codec
@@ -17,7 +14,6 @@ type options struct {
 }
 
 type reloadOptions struct {
-	Interval time.Duration
 	OnChange func()
 	OnError  func(error)
 }
@@ -43,15 +39,6 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
-// WithReloadInterval sets the polling and watcher retry interval.
-func WithReloadInterval(interval time.Duration) Option {
-	return func(opts *options) {
-		if interval > 0 {
-			opts.Reload.Interval = interval
-		}
-	}
-}
-
 // WithOnChange sets the callback run after a changed configuration is published.
 func WithOnChange(callback func()) Option {
 	return func(opts *options) {
@@ -69,9 +56,8 @@ func WithOnError(callback func(error)) Option {
 func normalizeOptions(optionFunctions []Option) options {
 	normalized := options{
 		Codec:  jsoncodec.New(),
-		Logger: slog.Default(),
+		Logger: slog.New(slog.DiscardHandler),
 		Reload: reloadOptions{
-			Interval: defaultReloadInterval,
 			OnChange: nil,
 			OnError:  nil,
 		},

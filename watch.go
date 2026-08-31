@@ -6,20 +6,26 @@ import (
 	"time"
 )
 
+const (
+	defaultPollingInterval = 30 * time.Second
+	// watcherRetryInterval delays restarting any Watcher that exits.
+	watcherRetryInterval = 30 * time.Second
+)
+
 func (s *Sundial[T]) watch(ctx context.Context, opts reloadOptions) {
 	watcher, native := s.provider.(Watcher)
+	if !native {
+		s.poll(ctx, opts)
+		return
+	}
+
 	for {
-		var err error
-		if native {
-			err = s.runWatcher(ctx, watcher, opts)
-		} else {
-			err = s.poll(ctx, opts)
-		}
+		err := s.runWatcher(ctx, watcher, opts)
 		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 			return
 		}
 
-		timer := time.NewTimer(opts.Interval)
+		timer := time.NewTimer(watcherRetryInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -52,17 +58,17 @@ func (s *Sundial[T]) runWatcher(ctx context.Context, watcher Watcher, opts reloa
 	return err
 }
 
-func (s *Sundial[T]) poll(ctx context.Context, opts reloadOptions) error {
-	ticker := time.NewTicker(opts.Interval)
+func (s *Sundial[T]) poll(ctx context.Context, opts reloadOptions) {
+	ticker := time.NewTicker(defaultPollingInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return
 		case <-ticker.C:
 			if err := s.autoReload(ctx, opts); errors.Is(err, context.Canceled) {
-				return err
+				return
 			}
 		}
 	}
