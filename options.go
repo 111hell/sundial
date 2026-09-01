@@ -1,17 +1,21 @@
 package sundial
 
 import (
-	"time"
+	"log/slog"
 
 	"github.com/sundayfun/sundial/codec"
 	jsoncodec "github.com/sundayfun/sundial/codec/json"
 )
 
-const defaultWatchInterval = 30 * time.Second
-
 type options struct {
-	Codec         codec.Codec
-	WatchInterval time.Duration
+	Codec  codec.Codec
+	Logger *slog.Logger
+	Reload reloadOptions
+}
+
+type reloadOptions struct {
+	OnChange func()
+	OnError  func(error)
 }
 
 // Option configures a Sundial instance.
@@ -26,45 +30,37 @@ func WithCodec(value codec.Codec) Option {
 	}
 }
 
-// WithWatchInterval configures the polling interval used when the Provider
-// does not implement Watcher.
-func WithWatchInterval(interval time.Duration) Option {
+// WithLogger configures structured debug and automatic reload error logging.
+func WithLogger(logger *slog.Logger) Option {
 	return func(opts *options) {
-		if interval > 0 {
-			opts.WatchInterval = interval
+		if logger != nil {
+			opts.Logger = logger
 		}
 	}
 }
 
-type watchOptions struct {
-	// OnChange runs after changed Provider content is published to memory.
-	OnChange func()
-	// OnError reports reload failures and Provider watcher errors.
-	OnError func(error)
-}
-
-// WatchOption configures Watch callbacks.
-type WatchOption func(*watchOptions)
-
-// WithOnChange configures a callback that runs after a changed configuration
-// is published to memory.
-func WithOnChange(callback func()) WatchOption {
-	return func(opts *watchOptions) {
-		opts.OnChange = callback
+// WithOnChange sets the callback run after a changed configuration is published.
+func WithOnChange(callback func()) Option {
+	return func(opts *options) {
+		opts.Reload.OnChange = callback
 	}
 }
 
-// WithOnError configures a callback for reload and Provider watcher errors.
-func WithOnError(callback func(error)) WatchOption {
-	return func(opts *watchOptions) {
-		opts.OnError = callback
+// WithOnError sets the automatic reload error callback.
+func WithOnError(callback func(error)) Option {
+	return func(opts *options) {
+		opts.Reload.OnError = callback
 	}
 }
 
 func normalizeOptions(optionFunctions []Option) options {
 	normalized := options{
-		Codec:         jsoncodec.New(),
-		WatchInterval: defaultWatchInterval,
+		Codec:  jsoncodec.New(),
+		Logger: slog.New(slog.DiscardHandler),
+		Reload: reloadOptions{
+			OnChange: nil,
+			OnError:  nil,
+		},
 	}
 	for _, option := range optionFunctions {
 		if option != nil {
@@ -72,18 +68,5 @@ func normalizeOptions(optionFunctions []Option) options {
 		}
 	}
 
-	return normalized
-}
-
-func normalizeWatchOptions(optionFunctions []WatchOption) watchOptions {
-	normalized := watchOptions{
-		OnChange: nil,
-		OnError:  nil,
-	}
-	for _, option := range optionFunctions {
-		if option != nil {
-			option(&normalized)
-		}
-	}
 	return normalized
 }

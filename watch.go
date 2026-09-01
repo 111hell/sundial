@@ -6,55 +6,89 @@ import (
 	"time"
 )
 
-// Reload replaces the in-memory state when the Provider content changed.
-func (s *Sundial[T]) Reload(ctx context.Context) error {
-	_, err := s.reload(ctx)
+const (
+	// defaultPollingInterval is the fallback interval for Providers without Watch support.
+	defaultPollingInterval = 30 * time.Second
+	// watcherRetryInterval is the retry delay for any Watcher that exits.
+	watcherRetryInterval = 30 * time.Second
+)
+
+func (s *Sundial[T]) watch(ctx context.Context, opts reloadOptions) {
+	watcher, native := s.provider.(Watcher)
+	if !native {
+		s.poll(ctx, opts)
+		return
+	}
+
+	for {
+		err := s.runWatcher(ctx, watcher, opts)
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			return
+		}
+
+		timer := time.NewTimer(watcherRetryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *Sundial[T]) runWatcher(ctx context.Context, watcher Watcher, opts reloadOptions) error {
+	var reloadErr error
+	err := watcher.Watch(ctx, func() error {
+		reloadErr = s.autoReload(ctx, opts)
+		return reloadErr
+	})
+	if err != nil && !errors.Is(err, context.Canceled) &&
+		!errors.Is(err, reloadErr) {
+		s.logger.ErrorContext(
+			ctx,
+			"automatic reload failed",
+			"operation",
+			"watch provider",
+			"error",
+			err,
+		)
+		if opts.OnError != nil {
+			opts.OnError(err)
+		}
+	}
 	return err
 }
 
-// Watch blocks until ctx is canceled or a native Provider watcher stops.
-func (s *Sundial[T]) Watch(ctx context.Context, optionFunctions ...WatchOption) error {
-	opts := normalizeWatchOptions(optionFunctions)
-
-	// Close the gap between New's initial load and watcher registration.
-	if err := s.watchReload(ctx, opts); errors.Is(err, context.Canceled) {
-		return err
-	}
-
-	if watcher, ok := s.provider.(Watcher); ok {
-		var reloadErr error
-		err := watcher.Watch(ctx, func() error {
-			reloadErr = s.watchReload(ctx, opts)
-			return reloadErr
-		})
-		if err != nil && !errors.Is(err, context.Canceled) &&
-			!errors.Is(err, reloadErr) && opts.OnError != nil {
-			opts.OnError(err)
-		}
-		return err
-	}
-
-	ticker := time.NewTicker(s.watchInterval)
+func (s *Sundial[T]) poll(ctx context.Context, opts reloadOptions) {
+	ticker := time.NewTicker(defaultPollingInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return
 		case <-ticker.C:
-			if err := s.watchReload(ctx, opts); errors.Is(err, context.Canceled) {
-				return err
+			if err := s.autoReload(ctx, opts); errors.Is(err, context.Canceled) {
+				return
 			}
 		}
 	}
 }
 
-func (s *Sundial[T]) watchReload(ctx context.Context, opts watchOptions) error {
+func (s *Sundial[T]) autoReload(ctx context.Context, opts reloadOptions) error {
 	changed, err := s.reload(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return err
 		}
+		s.logger.ErrorContext(
+			ctx,
+			"automatic reload failed",
+			"operation",
+			"reload configuration",
+			"error",
+			err,
+		)
 		if opts.OnError != nil {
 			opts.OnError(err)
 		}
@@ -63,25 +97,9 @@ func (s *Sundial[T]) watchReload(ctx context.Context, opts watchOptions) error {
 	if changed && opts.OnChange != nil {
 		opts.OnChange()
 	}
+	if changed {
+		current := s.snapshot.Load()
+		s.logger.DebugContext(ctx, "reloaded configuration", "revision", current.metadata.Revision)
+	}
 	return nil
-}
-
-func (s *Sundial[T]) reload(ctx context.Context) (bool, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
-	next, err := s.loadSnapshot(ctx)
-	if err != nil {
-		return false, err
-	}
-	current := s.snapshot.Load()
-	if next.hash == current.hash {
-		if next.metadata.Revision != current.metadata.Revision {
-			s.snapshot.Store(next)
-		}
-		return false, nil
-	}
-
-	s.snapshot.Store(next)
-	return true, nil
 }

@@ -20,9 +20,9 @@ type Provider interface {
 	PutIfRevision(ctx context.Context, data []byte, expectedMetadata Metadata) (Metadata, error)
 }
 
-// Watcher is an optional Provider capability for detecting external changes.
-// The callback asks Sundial to reload the configuration from the Provider. A
-// callback error means the change was not applied.
+// Watcher detects Provider changes.
+// Watch must notify once after registration and stop when ctx is canceled.
+// A notify error means the change was not applied.
 type Watcher interface {
 	Watch(ctx context.Context, notify func() error) error
 }

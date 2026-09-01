@@ -1,9 +1,9 @@
 package sundial
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
-	"strings"
 
 	"github.com/sundayfun/sundial/codec"
 )
@@ -31,8 +31,8 @@ func decodeSnapshot[T any](documentCodec codec.Codec, data []byte, metadata Meta
 
 func decodeConfig[T any](documentCodec codec.Codec, data []byte) (T, error) {
 	var config T
-	if strings.TrimSpace(string(data)) == "" {
-		return config, nil
+	if len(bytes.TrimSpace(data)) == 0 {
+		return config, ErrEmptyDocument
 	}
 	if err := documentCodec.Decode(data, &config); err != nil {
 		return config, err
