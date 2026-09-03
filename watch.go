@@ -13,7 +13,7 @@ const (
 	watcherRetryInterval = 30 * time.Second
 )
 
-func (s *Sundial[T]) watch(ctx context.Context, opts reloadOptions) {
+func (s *Client[T]) watch(ctx context.Context, opts reloadOptions[T]) {
 	watcher, native := s.provider.(Watcher)
 	if !native {
 		s.poll(ctx, opts)
@@ -36,7 +36,7 @@ func (s *Sundial[T]) watch(ctx context.Context, opts reloadOptions) {
 	}
 }
 
-func (s *Sundial[T]) runWatcher(ctx context.Context, watcher Watcher, opts reloadOptions) error {
+func (s *Client[T]) runWatcher(ctx context.Context, watcher Watcher, opts reloadOptions[T]) error {
 	var reloadErr error
 	err := watcher.Watch(ctx, func() error {
 		reloadErr = s.autoReload(ctx, opts)
@@ -53,13 +53,13 @@ func (s *Sundial[T]) runWatcher(ctx context.Context, watcher Watcher, opts reloa
 			err,
 		)
 		if opts.OnError != nil {
-			opts.OnError(err)
+			opts.OnError(ctx, err)
 		}
 	}
 	return err
 }
 
-func (s *Sundial[T]) poll(ctx context.Context, opts reloadOptions) {
+func (s *Client[T]) poll(ctx context.Context, opts reloadOptions[T]) {
 	ticker := time.NewTicker(defaultPollingInterval)
 	defer ticker.Stop()
 
@@ -75,8 +75,8 @@ func (s *Sundial[T]) poll(ctx context.Context, opts reloadOptions) {
 	}
 }
 
-func (s *Sundial[T]) autoReload(ctx context.Context, opts reloadOptions) error {
-	changed, err := s.reload(ctx)
+func (s *Client[T]) autoReload(ctx context.Context, opts reloadOptions[T]) error {
+	entry, changed, err := s.reload(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return err
@@ -90,12 +90,12 @@ func (s *Sundial[T]) autoReload(ctx context.Context, opts reloadOptions) error {
 			err,
 		)
 		if opts.OnError != nil {
-			opts.OnError(err)
+			opts.OnError(ctx, err)
 		}
 		return err
 	}
 	if changed && opts.OnChange != nil {
-		opts.OnChange()
+		opts.OnChange(ctx, entry)
 	}
 	if changed {
 		current := s.snapshot.Load()

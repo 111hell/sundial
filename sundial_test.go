@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -175,7 +176,7 @@ func TestNewRejectsEmptyConfiguration(t *testing.T) {
 	tests := []struct {
 		name    string
 		data    []byte
-		options []sundial.Option
+		options []sundial.Option[testConfig]
 	}{
 		{
 			name:    "empty JSON",
@@ -190,12 +191,12 @@ func TestNewRejectsEmptyConfiguration(t *testing.T) {
 		{
 			name:    "empty YAML",
 			data:    []byte{},
-			options: []sundial.Option{sundial.WithCodec(yamlcodec.New())},
+			options: []sundial.Option[testConfig]{sundial.WithCodec[testConfig](yamlcodec.New())},
 		},
 		{
 			name:    "whitespace YAML",
 			data:    []byte(" \n\t"),
-			options: []sundial.Option{sundial.WithCodec(yamlcodec.New())},
+			options: []sundial.Option[testConfig]{sundial.WithCodec[testConfig](yamlcodec.New())},
 		},
 	}
 
@@ -240,7 +241,7 @@ func TestWithLoggerLogsSuccessfulOperationsAndErrors(t *testing.T) {
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
 		provider,
-		sundial.WithLogger(logger),
+		sundial.WithLogger[testConfig](logger),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -251,7 +252,7 @@ func TestWithLoggerLogsSuccessfulOperationsAndErrors(t *testing.T) {
 		t.Fatalf("Get() error = %v", err)
 	}
 	entry.Value.Enabled = true
-	if putErr := configStore.Put(t.Context(), entry); putErr != nil {
+	if _, putErr := configStore.Put(t.Context(), entry); putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
 	}
 
@@ -269,7 +270,7 @@ func TestWithLoggerLogsSuccessfulOperationsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() before failed Put error = %v", err)
 	}
-	if putErr := configStore.Put(t.Context(), entry); putErr == nil {
+	if _, putErr := configStore.Put(t.Context(), entry); putErr == nil {
 		t.Fatal("Put() error = nil, want failure")
 	}
 
@@ -300,7 +301,7 @@ func TestWithLoggerLogsInitialLoadError(t *testing.T) {
 	_, err := sundial.New[testConfig](
 		t.Context(),
 		providertesting.New([]byte(`{"enabled":`)),
-		sundial.WithLogger(logger),
+		sundial.WithLogger[testConfig](logger),
 	)
 	if err == nil {
 		t.Fatal("New() error = nil, want decode failure")
@@ -320,7 +321,7 @@ func TestCustomCodec(t *testing.T) {
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
 		provider,
-		sundial.WithCodec(prefixedJSONCodec{prefix: []byte(prefix)}),
+		sundial.WithCodec[testConfig](prefixedJSONCodec{prefix: []byte(prefix)}),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -333,7 +334,7 @@ func TestCustomCodec(t *testing.T) {
 	config := entry.Value
 	config.Enabled = false
 	entry.Value = config
-	if putErr := configStore.Put(context.Background(), entry); putErr != nil {
+	if _, putErr := configStore.Put(context.Background(), entry); putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
 	}
 	if !bytes.HasPrefix(provider.Data(), []byte(prefix)) {
@@ -348,7 +349,7 @@ func TestYAMLCodec(t *testing.T) {
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
 		provider,
-		sundial.WithCodec(yamlcodec.New()),
+		sundial.WithCodec[testConfig](yamlcodec.New()),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -370,7 +371,7 @@ func TestYAMLCodec(t *testing.T) {
 	config = entry.Value
 	config.Server.Port = 9090
 	entry.Value = config
-	if putErr := configStore.Put(context.Background(), entry); putErr != nil {
+	if _, putErr := configStore.Put(context.Background(), entry); putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
 	}
 	if !bytes.Contains(provider.Data(), []byte("port: 9090")) {
@@ -400,8 +401,19 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 	config := entry.Value
 	config.Server.Port = 9090
 	entry.Value = config
-	if putErr := configStore.Put(context.Background(), entry); putErr != nil {
+	savedEntry, putErr := configStore.Put(context.Background(), entry)
+	if putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
+	}
+	if savedEntry.Metadata.Revision == entry.Metadata.Revision {
+		t.Fatalf("Put() revision = %q, want a new revision", savedEntry.Metadata.Revision)
+	}
+	currentEntry, getErr := configStore.Get()
+	if getErr != nil {
+		t.Fatalf("Get() after Put error = %v", getErr)
+	}
+	if !reflect.DeepEqual(savedEntry, currentEntry) {
+		t.Fatalf("Put() entry = %#v, want current Entry %#v", savedEntry, currentEntry)
 	}
 
 	if got := provider.PutIfRevisionCount(); got != 1 {
@@ -439,7 +451,7 @@ func TestPutRejectsEmptyEncodedConfiguration(t *testing.T) {
 		configStore, err := sundial.New[testConfig](
 			t.Context(),
 			provider,
-			sundial.WithCodec(fixedEncodeCodec{encoded: encoded}),
+			sundial.WithCodec[testConfig](fixedEncodeCodec{encoded: encoded}),
 		)
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
@@ -450,7 +462,7 @@ func TestPutRejectsEmptyEncodedConfiguration(t *testing.T) {
 			t.Fatalf("Get() error = %v", err)
 		}
 		entry.Value.Server.Port = 9090
-		putErr := configStore.Put(context.Background(), entry)
+		_, putErr := configStore.Put(context.Background(), entry)
 		if !errors.Is(putErr, sundial.ErrEmptyDocument) {
 			t.Fatalf("Put() error = %v, want ErrEmptyDocument", putErr)
 		}
@@ -487,7 +499,7 @@ func TestPutFailureKeepsPreviousMemory(t *testing.T) {
 	config := entry.Value
 	config.Server.Port = 9090
 	entry.Value = config
-	if putErr := configStore.Put(context.Background(), entry); putErr == nil {
+	if _, putErr := configStore.Put(context.Background(), entry); putErr == nil {
 		t.Fatal("Put() error = nil, want failure")
 	}
 
@@ -613,31 +625,52 @@ func TestGetReturnsDetachedConfiguration(t *testing.T) {
 func TestAutomaticNativeWatcherReloadsExternalChanges(t *testing.T) {
 	t.Parallel()
 
+	type contextKey struct{}
+	type notification struct {
+		ctx   context.Context
+		entry sundial.Entry[testConfig]
+	}
+
+	ctx := context.WithValue(t.Context(), contextKey{}, "watch")
 	provider := providertesting.NewWatcher([]byte(`{"enabled":false}`))
-	changed := make(chan struct{}, 1)
-	configStore, err := sundial.New[testConfig](
-		t.Context(),
+	changed := make(chan notification, 1)
+	_, err := sundial.New[testConfig](
+		ctx,
 		provider,
-		sundial.WithOnChange(func() {
-			changed <- struct{}{}
+		sundial.WithOnChange[testConfig](func(callbackCtx context.Context, entry sundial.Entry[testConfig]) {
+			changed <- notification{ctx: callbackCtx, entry: entry}
 		}),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
+	deadline := time.Now().Add(time.Second)
+	for provider.GetCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if provider.GetCount() < 2 {
+		t.Fatal("native watcher did not finish initial notification")
+	}
+	getCount := provider.GetCount()
+
 	provider.Change([]byte(`{"enabled":true}`))
 	select {
-	case <-changed:
+	case got := <-changed:
+		if got.ctx.Value(contextKey{}) != "watch" {
+			t.Fatal("OnChange() context does not match the watch context")
+		}
+		if !got.entry.Value.Enabled {
+			t.Fatal("OnChange() Enabled = false, want true")
+		}
+		if got.entry.Metadata.Revision != "2" {
+			t.Fatalf("OnChange() revision = %q, want 2", got.entry.Metadata.Revision)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("native watcher did not report external change")
 	}
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if !entry.Value.Enabled {
-		t.Fatal("watched Enabled = false, want true")
+	if got := provider.GetCount(); got != getCount+1 {
+		t.Fatalf("Provider.Get() count = %d, want %d without callback Get", got, getCount+1)
 	}
 }
 
@@ -677,18 +710,25 @@ func TestContextCancellationStopsAutomaticReload(t *testing.T) {
 func TestNativeWatcherReceivesReloadError(t *testing.T) {
 	t.Parallel()
 
+	type contextKey struct{}
+	type errorNotification struct {
+		ctx context.Context
+		err error
+	}
+
+	ctx := context.WithValue(t.Context(), contextKey{}, "watch")
 	wantErr := errors.New("load failed")
 	provider := &reloadErrorWatcher{
 		Provider:       providertesting.New([]byte(`{"enabled":false}`)),
 		reloadErr:      wantErr,
 		callbackResult: make(chan error, 1),
 	}
-	reported := make(chan error, 1)
+	reported := make(chan errorNotification, 1)
 	_, err := sundial.New[testConfig](
-		t.Context(),
+		ctx,
 		provider,
-		sundial.WithOnError(func(err error) {
-			reported <- err
+		sundial.WithOnError[testConfig](func(callbackCtx context.Context, err error) {
+			reported <- errorNotification{ctx: callbackCtx, err: err}
 		}),
 	)
 	if err != nil {
@@ -704,16 +744,19 @@ func TestNativeWatcherReceivesReloadError(t *testing.T) {
 		t.Fatal("Watcher callback was not invoked")
 	}
 	select {
-	case reportedErr := <-reported:
-		if !errors.Is(reportedErr, wantErr) {
-			t.Fatalf("OnError() error = %v, want %v", reportedErr, wantErr)
+	case got := <-reported:
+		if got.ctx.Value(contextKey{}) != "watch" {
+			t.Fatal("OnError() context does not match the watch context")
+		}
+		if !errors.Is(got.err, wantErr) {
+			t.Fatalf("OnError() error = %v, want %v", got.err, wantErr)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("OnError() was not invoked")
 	}
 	select {
-	case duplicateErr := <-reported:
-		t.Fatalf("OnError() was invoked twice; second error = %v", duplicateErr)
+	case duplicate := <-reported:
+		t.Fatalf("OnError() was invoked twice; second error = %v", duplicate.err)
 	default:
 	}
 }
@@ -740,12 +783,12 @@ func TestPutRejectsStaleRevisionWithinInstance(t *testing.T) {
 
 	first.Counter = 1
 	firstEntry.Value = first
-	if putErr := configStore.Put(context.Background(), firstEntry); putErr != nil {
+	if _, putErr := configStore.Put(context.Background(), firstEntry); putErr != nil {
 		t.Fatalf("first Put() error = %v", putErr)
 	}
 	stale.Enabled = true
 	staleEntry.Value = stale
-	putErr := configStore.Put(context.Background(), staleEntry)
+	_, putErr := configStore.Put(context.Background(), staleEntry)
 	if !errors.Is(putErr, sundial.ErrConflict) {
 		t.Fatalf("stale Put() error = %v, want ErrConflict", putErr)
 	}
@@ -808,12 +851,12 @@ func TestPutRejectsStaleRevisionAcrossInstancesAndAllowsRetry(t *testing.T) {
 
 	first.Counter = 1
 	firstEntry.Value = first
-	if putErr := firstStore.Put(context.Background(), firstEntry); putErr != nil {
+	if _, putErr := firstStore.Put(context.Background(), firstEntry); putErr != nil {
 		t.Fatalf("first Put() error = %v", putErr)
 	}
 	second.Enabled = true
 	secondEntry.Value = second
-	putErr := secondStore.Put(context.Background(), secondEntry)
+	_, putErr := secondStore.Put(context.Background(), secondEntry)
 	if !errors.Is(putErr, sundial.ErrConflict) {
 		t.Fatalf("stale Put() error = %v, want ErrConflict", putErr)
 	}
@@ -828,7 +871,7 @@ func TestPutRejectsStaleRevisionAcrossInstancesAndAllowsRetry(t *testing.T) {
 	second = secondEntry.Value
 	second.Enabled = true
 	secondEntry.Value = second
-	if putErr := secondStore.Put(context.Background(), secondEntry); putErr != nil {
+	if _, putErr := secondStore.Put(context.Background(), secondEntry); putErr != nil {
 		t.Fatalf("retry Put() error = %v", putErr)
 	}
 
@@ -850,7 +893,7 @@ func TestPutRejectsEntryWithoutRevision(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	putErr := configStore.Put(context.Background(), sundial.Entry[testConfig]{
+	_, putErr := configStore.Put(context.Background(), sundial.Entry[testConfig]{
 		Value: testConfig{Counter: 1},
 	})
 	if !errors.Is(putErr, sundial.ErrConflict) {
@@ -882,7 +925,7 @@ func TestReloadTracksChangedProviderRevisionWhenContentIsUnchanged(t *testing.T)
 	config := entry.Value
 	config.Enabled = false
 	entry.Value = config
-	if putErr := configStore.Put(context.Background(), entry); putErr != nil {
+	if _, putErr := configStore.Put(context.Background(), entry); putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
 	}
 	if got := provider.PutIfRevisionCount(); got != 1 {
@@ -916,7 +959,7 @@ func TestConcurrentReadsAndWrites(t *testing.T) {
 				config := entry.Value
 				config.Counter = value
 				entry.Value = config
-				putErr := configStore.Put(context.Background(), entry)
+				_, putErr := configStore.Put(context.Background(), entry)
 				if errors.Is(putErr, sundial.ErrConflict) {
 					continue
 				}
