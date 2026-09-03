@@ -1,7 +1,6 @@
 package sundial
 
 import (
-	"context"
 	"log/slog"
 
 	"github.com/sundayfun/sundial/codec"
@@ -15,8 +14,8 @@ type options[T any] struct {
 }
 
 type reloadOptions[T any] struct {
-	OnChange func(context.Context, Entry[T])
-	OnError  func(context.Context, error)
+	OnChange func(Entry[T])
+	OnError  func(error)
 }
 
 // Option configures a Client.
@@ -41,14 +40,14 @@ func WithLogger[T any](logger *slog.Logger) Option[T] {
 }
 
 // WithOnChange sets the callback run after a changed configuration is published.
-func WithOnChange[T any](callback func(context.Context, Entry[T])) Option[T] {
+func WithOnChange[T any](callback func(Entry[T])) Option[T] {
 	return func(opts *options[T]) {
 		opts.Reload.OnChange = callback
 	}
 }
 
 // WithOnError sets the automatic reload error callback.
-func WithOnError[T any](callback func(context.Context, error)) Option[T] {
+func WithOnError[T any](callback func(error)) Option[T] {
 	return func(opts *options[T]) {
 		opts.Reload.OnError = callback
 	}

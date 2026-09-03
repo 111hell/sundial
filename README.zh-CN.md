@@ -101,8 +101,7 @@ Revision 的已保存 `Entry`；Revision 过期时返回 `ErrConflict`。它不�
 - 配置文档为空或仅包含空白字符时，`New`、`Put` 或 `Reload` 返回解码错误。
 - `Put` 失败或发生冲突时，当前内存快照保持不变。
 - 重新加载失败时，保留上一份有效配置。
-- `WithOnChange` 接收重新加载的 Context 和新发布的 `Entry`；`WithOnError`
-  接收重新加载的 Context 和错误。
+- `WithOnChange` 接收新发布的 `Entry`；`WithOnError` 接收自动重新加载错误。
 - 取消传给 `New` 的 context 会停止自动重新加载。
 - `Get` 支持并发调用。同一实例的 `Put` 会串行执行，陈旧 Revision 会返回
   `ErrConflict`。

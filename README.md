@@ -101,8 +101,8 @@ See the runnable [S3 example](examples/s3).
 - An empty or whitespace-only document causes `New`, `Put`, or `Reload` to return a decode error.
 - A failed or conflicting `Put` leaves the current in-memory snapshot unchanged.
 - A failed reload keeps the last valid snapshot.
-- `WithOnChange` receives the reload context and newly published `Entry`;
-  `WithOnError` receives the reload context and error.
+- `WithOnChange` receives the newly published `Entry`; `WithOnError` receives
+  automatic reload errors.
 - Canceling the context passed to `New` stops automatic reload.
 - `Get` is safe for concurrent use. `Put` calls are serialized per instance,
   and stale revisions return `ErrConflict`.

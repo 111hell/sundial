@@ -53,7 +53,7 @@ func (s *Client[T]) runWatcher(ctx context.Context, watcher Watcher, opts reload
 			err,
 		)
 		if opts.OnError != nil {
-			opts.OnError(ctx, err)
+			opts.OnError(err)
 		}
 	}
 	return err
@@ -90,12 +90,12 @@ func (s *Client[T]) autoReload(ctx context.Context, opts reloadOptions[T]) error
 			err,
 		)
 		if opts.OnError != nil {
-			opts.OnError(ctx, err)
+			opts.OnError(err)
 		}
 		return err
 	}
 	if changed && opts.OnChange != nil {
-		opts.OnChange(ctx, entry)
+		opts.OnChange(entry)
 	}
 	if changed {
 		current := s.snapshot.Load()

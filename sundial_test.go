@@ -625,20 +625,13 @@ func TestGetReturnsDetachedConfiguration(t *testing.T) {
 func TestAutomaticNativeWatcherReloadsExternalChanges(t *testing.T) {
 	t.Parallel()
 
-	type contextKey struct{}
-	type notification struct {
-		ctx   context.Context
-		entry sundial.Entry[testConfig]
-	}
-
-	ctx := context.WithValue(t.Context(), contextKey{}, "watch")
 	provider := providertesting.NewWatcher([]byte(`{"enabled":false}`))
-	changed := make(chan notification, 1)
+	changed := make(chan sundial.Entry[testConfig], 1)
 	_, err := sundial.New[testConfig](
-		ctx,
+		t.Context(),
 		provider,
-		sundial.WithOnChange[testConfig](func(callbackCtx context.Context, entry sundial.Entry[testConfig]) {
-			changed <- notification{ctx: callbackCtx, entry: entry}
+		sundial.WithOnChange[testConfig](func(entry sundial.Entry[testConfig]) {
+			changed <- entry
 		}),
 	)
 	if err != nil {
@@ -656,15 +649,12 @@ func TestAutomaticNativeWatcherReloadsExternalChanges(t *testing.T) {
 
 	provider.Change([]byte(`{"enabled":true}`))
 	select {
-	case got := <-changed:
-		if got.ctx.Value(contextKey{}) != "watch" {
-			t.Fatal("OnChange() context does not match the watch context")
-		}
-		if !got.entry.Value.Enabled {
+	case entry := <-changed:
+		if !entry.Value.Enabled {
 			t.Fatal("OnChange() Enabled = false, want true")
 		}
-		if got.entry.Metadata.Revision != "2" {
-			t.Fatalf("OnChange() revision = %q, want 2", got.entry.Metadata.Revision)
+		if entry.Metadata.Revision != "2" {
+			t.Fatalf("OnChange() revision = %q, want 2", entry.Metadata.Revision)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("native watcher did not report external change")
@@ -710,25 +700,18 @@ func TestContextCancellationStopsAutomaticReload(t *testing.T) {
 func TestNativeWatcherReceivesReloadError(t *testing.T) {
 	t.Parallel()
 
-	type contextKey struct{}
-	type errorNotification struct {
-		ctx context.Context
-		err error
-	}
-
-	ctx := context.WithValue(t.Context(), contextKey{}, "watch")
 	wantErr := errors.New("load failed")
 	provider := &reloadErrorWatcher{
 		Provider:       providertesting.New([]byte(`{"enabled":false}`)),
 		reloadErr:      wantErr,
 		callbackResult: make(chan error, 1),
 	}
-	reported := make(chan errorNotification, 1)
+	reported := make(chan error, 1)
 	_, err := sundial.New[testConfig](
-		ctx,
+		t.Context(),
 		provider,
-		sundial.WithOnError[testConfig](func(callbackCtx context.Context, err error) {
-			reported <- errorNotification{ctx: callbackCtx, err: err}
+		sundial.WithOnError[testConfig](func(err error) {
+			reported <- err
 		}),
 	)
 	if err != nil {
@@ -744,19 +727,16 @@ func TestNativeWatcherReceivesReloadError(t *testing.T) {
 		t.Fatal("Watcher callback was not invoked")
 	}
 	select {
-	case got := <-reported:
-		if got.ctx.Value(contextKey{}) != "watch" {
-			t.Fatal("OnError() context does not match the watch context")
-		}
-		if !errors.Is(got.err, wantErr) {
-			t.Fatalf("OnError() error = %v, want %v", got.err, wantErr)
+	case reportedErr := <-reported:
+		if !errors.Is(reportedErr, wantErr) {
+			t.Fatalf("OnError() error = %v, want %v", reportedErr, wantErr)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("OnError() was not invoked")
 	}
 	select {
-	case duplicate := <-reported:
-		t.Fatalf("OnError() was invoked twice; second error = %v", duplicate.err)
+	case duplicateErr := <-reported:
+		t.Fatalf("OnError() was invoked twice; second error = %v", duplicateErr)
 	default:
 	}
 }

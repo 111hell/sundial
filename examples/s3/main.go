@@ -48,11 +48,11 @@ func run() error {
 			WatchInterval: 0,
 		},
 		// Optional: called after a changed configuration is reloaded.
-		sundial.WithOnChange[config](func(_ context.Context, entry sundial.Entry[config]) {
+		sundial.WithOnChange(func(entry sundial.Entry[config]) {
 			printEntry("reloaded", entry)
 		}),
 		// Optional: called when automatic reload fails.
-		sundial.WithOnError[config](func(_ context.Context, reloadErr error) {
+		sundial.WithOnError[config](func(reloadErr error) {
 			log.Printf("reload configuration: %v", reloadErr)
 		}),
 	)
