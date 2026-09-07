@@ -10,6 +10,7 @@ Sundial 是一个轻量、可扩展、类型安全的 Go 配置 SDK，提供内�
 - **类型安全访问**：应用直接读取自己定义的配置结构体，不再使用字符串路径和 `any`。
 - **快速读取**：`Get` 只读取内存快照。
 - **持久化写入**：`Put` 有条件地保存完整的强类型配置文档。
+- **版本历史**：支持查看历史版本和恢复配置。
 - **实时更新**：自动重新加载将外部变化同步到内存。
 - **存储和格式可扩展**：配置源实现 `Provider`；默认使用 JSON，其他格式通过 Codec 扩展。
 
@@ -35,7 +36,8 @@ type Config struct {
 }
 ```
 
-以下以 S3 为例：
+以下使用已经初始化的 S3 对象；首次配置由调用方通过 `NewProvider` 和
+`Provider.Put` 显式发布。
 
 ```go
 ctx, cancel := context.WithCancel(context.Background())
@@ -44,7 +46,8 @@ defer cancel()
 configStore, err := s3provider.New[Config](ctx, &s3provider.Config{
 	Region: "us-east-1",
 	Bucket: "my-config-bucket",
-	Key:    "production/app.json",
+	CurrentRevisionKey: "production/app/current",
+	RevisionKeyPrefix:  "production/app/history/",
 })
 if err != nil {
 	log.Fatal(err)
@@ -81,12 +84,22 @@ if err != nil {
 }
 ```
 
-`Put` 使用 `entry.Metadata` 中的 Revision，并返回经 Codec 解码且带有新
-Revision 的已保存 `Entry`；Revision 过期时返回 `ErrConflict`。它不会自动
-合并或重试。
+`Put` 使用 `entry.Revision.ID`，并返回经 Codec 解码且带有新 `Revision`
+的已保存 `Entry`；Revision ID 过期时返回 `ErrConflict`。它不会自动合并或重试。
 
 默认使用 JSON；其他格式可通过 `WithCodec` 配置。具体存储实现位于
 `provider/<source>`。
+
+### 版本历史
+
+`CurrentRevisionKey` 和 `RevisionKeyPrefix` 均由调用方显式配置：
+
+```text
+production/app/current
+production/app/history/<revision-id>
+```
+
+`Put` 创建不可变版本；`ListRevisions` 和 `GetRevision` 用于读取历史；`RestoreRevision` 将历史内容复制成新的当前版本。`GetRevision` 返回的历史值与当前配置相互独立。
 
 完整示例见 [S3 示例](examples/s3)。
 
@@ -103,7 +116,7 @@ Revision 的已保存 `Entry`；Revision 过期时返回 `ErrConflict`。它不�
 - 重新加载失败时，保留上一份有效配置。
 - `WithOnChange` 接收新发布的 `Entry`；`WithOnError` 接收自动重新加载错误。
 - 取消传给 `New` 的 context 会停止自动重新加载。
-- `Get` 支持并发调用。同一实例的 `Put` 会串行执行，陈旧 Revision 会返回
+- `Get` 支持并发调用。同一实例的 `Put` 会串行执行，陈旧 Revision ID 会返回
   `ErrConflict`。
 
 ## 许可证

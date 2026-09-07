@@ -2,20 +2,20 @@
 
 ## Quick start
 
-Create the S3 object first using [config.json](config.json). Sundial treats a
-missing object as an error and does not create an empty configuration.
-
-Then run the example from the repository root. The S3 Provider uses the AWS SDK
-default credential chain:
+Set the S3 location first. The example uses the AWS SDK default credential
+chain:
 
 ```sh
 export AWS_REGION=us-east-1
 export SUNDIAL_S3_BUCKET=my-config-bucket
-export SUNDIAL_S3_PATH_PREFIX=production
-export SUNDIAL_S3_KEY=app.json
+export SUNDIAL_S3_CURRENT_REVISION_KEY=production/app/current
+export SUNDIAL_S3_REVISION_KEY_PREFIX=production/app/history/
 
-go run ./examples/s3
+go run ./examples/s3 -init ./examples/s3/config.json
 ```
+
+`-init` publishes the file before loading it. It is only needed when creating
+or resetting the example configuration.
 
 Update the port with a conditional write:
 
@@ -23,5 +23,5 @@ Update the port with a conditional write:
 go run ./examples/s3 -port 9090
 ```
 
-The update succeeds only if the object has not changed since it was loaded. A
-concurrent update is reported as a conflict and is not retried automatically.
+The update is conditional: it fails with a conflict if another writer publishes
+a revision after this process loads the configuration.

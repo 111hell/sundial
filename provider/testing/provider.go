@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/sundayfun/sundial"
 )
@@ -15,78 +16,62 @@ type Provider struct {
 	mu                 sync.RWMutex
 	data               []byte
 	exists             bool
-	getErr             error
-	putErr             error
 	putIfRevisionErr   error
 	getCount           int
-	putCount           int
 	putIfRevisionCount int
-	revision           uint64
+	revisionNumber     uint64
+	revision           sundial.Revision
 }
 
 // New creates a Provider. A nil document represents a missing configuration.
 func New(data []byte) *Provider {
-	provider := &Provider{
-		data:   cloneBytes(data),
-		exists: data != nil,
-	}
+	provider := &Provider{}
 	if data != nil {
-		provider.revision = 1
+		provider.store(data, true)
 	}
 	return provider
 }
 
 // Get returns the current test document.
-func (p *Provider) Get(context.Context) ([]byte, sundial.Metadata, error) {
+func (p *Provider) Get(context.Context) ([]byte, sundial.Revision, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.getCount++
-	if p.getErr != nil {
-		return nil, sundial.Metadata{}, p.getErr
-	}
 	if !p.exists {
-		return nil, sundial.Metadata{}, sundial.ErrNotFound
+		return nil, sundial.Revision{}, sundial.ErrNotFound
 	}
-	return cloneBytes(p.data), sundial.Metadata{Revision: p.currentRevision()}, nil
+	return cloneBytes(p.data), p.revision, nil
 }
 
 // Put writes the current test document without checking its revision.
-func (p *Provider) Put(_ context.Context, data []byte) (sundial.Metadata, error) {
+func (p *Provider) Put(_ context.Context, data []byte) (sundial.Revision, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.putCount++
-	if p.putErr != nil {
-		return sundial.Metadata{}, p.putErr
-	}
-	p.revision++
-	p.data = cloneBytes(data)
-	p.exists = true
-	return sundial.Metadata{Revision: p.currentRevision()}, nil
+	p.store(data, true)
+	return p.revision, nil
 }
 
 // PutIfRevision replaces the current test document when
-// expectedMetadata.Revision is current.
+// expectedRevisionID is current.
 func (p *Provider) PutIfRevision(
 	_ context.Context,
 	data []byte,
-	expectedMetadata sundial.Metadata,
-) (sundial.Metadata, error) {
+	expectedRevisionID string,
+) (sundial.Revision, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.putIfRevisionCount++
 	if p.putIfRevisionErr != nil {
-		return sundial.Metadata{}, p.putIfRevisionErr
+		return sundial.Revision{}, p.putIfRevisionErr
 	}
-	if expectedMetadata.Revision == "" || expectedMetadata.Revision != p.currentRevision() {
-		return sundial.Metadata{}, sundial.ErrConflict
+	if expectedRevisionID == "" || expectedRevisionID != p.revision.ID || !p.exists {
+		return sundial.Revision{}, sundial.ErrConflict
 	}
-	p.revision++
-	p.data = cloneBytes(data)
-	p.exists = true
-	return sundial.Metadata{Revision: p.currentRevision()}, nil
+	p.store(data, true)
+	return p.revision, nil
 }
 
 // SetData simulates an external configuration change.
@@ -94,23 +79,7 @@ func (p *Provider) SetData(data []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.revision++
-	p.data = cloneBytes(data)
-	p.exists = data != nil
-}
-
-// SetGetError configures Get to fail.
-func (p *Provider) SetGetError(err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.getErr = err
-}
-
-// SetPutError configures Put to fail.
-func (p *Provider) SetPutError(err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.putErr = err
+	p.store(data, data != nil)
 }
 
 // SetPutIfRevisionError configures PutIfRevision to fail.
@@ -132,13 +101,6 @@ func (p *Provider) GetCount() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.getCount
-}
-
-// PutCount returns the number of Put calls.
-func (p *Provider) PutCount() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.putCount
 }
 
 // PutIfRevisionCount returns the number of PutIfRevision calls.
@@ -183,10 +145,8 @@ func (p *WatchProvider) Watch(ctx context.Context, notify func() error) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-p.changes:
-			if err := notify(); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return err
-				}
+			if err := notify(); errors.Is(err, context.Canceled) {
+				return err
 			}
 		}
 	}
@@ -196,9 +156,17 @@ func cloneBytes(data []byte) []byte {
 	return append([]byte(nil), data...)
 }
 
-func (p *Provider) currentRevision() string {
-	if !p.exists {
-		return ""
+func (p *Provider) store(data []byte, exists bool) {
+	parentID := ""
+	if p.exists {
+		parentID = p.revision.ID
 	}
-	return strconv.FormatUint(p.revision, 10)
+	p.revisionNumber++
+	p.revision = sundial.Revision{
+		ID:        strconv.FormatUint(p.revisionNumber, 10),
+		ParentID:  parentID,
+		CreatedAt: time.Now().UTC(),
+	}
+	p.data = cloneBytes(data)
+	p.exists = exists
 }

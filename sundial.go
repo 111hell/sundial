@@ -20,11 +20,12 @@ type Client[T any] struct {
 	snapshot atomic.Pointer[snapshot]
 }
 
-// Entry pairs a detached configuration value with the Provider metadata from
-// the same in-memory snapshot.
+// Entry pairs a detached configuration value with its revision.
 type Entry[T any] struct {
-	Value    T
-	Metadata Metadata
+	// Value is a detached copy of the configuration document.
+	Value T
+	// Revision describes the immutable revision paired with Value.
+	Revision Revision
 }
 
 // New loads the configuration and reloads it until ctx is canceled.
@@ -44,7 +45,7 @@ func New[T any](ctx context.Context, provider Provider, opts ...Option[T]) (*Cli
 		return nil, err
 	}
 	s.snapshot.Store(loaded)
-	s.logger.DebugContext(ctx, "loaded configuration", "revision", loaded.metadata.Revision)
+	s.logger.DebugContext(ctx, "loaded configuration", "revision_id", loaded.revision.ID)
 
 	go s.watch(ctx, normalized.Reload)
 
@@ -56,52 +57,57 @@ func (s *Client[T]) Get() (Entry[T], error) {
 	current := s.snapshot.Load()
 	config, err := decodeConfig[T](s.codec, current.data)
 	if err != nil {
-		return Entry[T]{Value: config, Metadata: Metadata{Revision: ""}},
+		var zeroRevision Revision
+		return Entry[T]{Value: config, Revision: zeroRevision},
 			fmt.Errorf("sundial: decode configuration: %w", err)
 	}
-	return Entry[T]{Value: config, Metadata: current.metadata}, nil
+	return Entry[T]{Value: config, Revision: current.revision}, nil
 }
 
-// Put saves entry when its metadata revision is current, then updates memory.
-// It returns the codec-decoded saved Entry with its new metadata. A stale
-// revision returns ErrConflict.
+// Put saves entry when its revision ID is current, then updates memory.
+// It returns the codec-decoded saved Entry with its new revision. A stale
+// revision ID returns ErrConflict.
 func (s *Client[T]) Put(ctx context.Context, entry Entry[T]) (Entry[T], error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-
 	data, err := s.codec.Encode(entry.Value)
 	if err != nil {
 		putErr := fmt.Errorf("sundial: encode configuration: %w", err)
 		s.logger.ErrorContext(ctx, "put configuration", "error", putErr)
 		return Entry[T]{}, putErr
 	}
-	next, savedValue, err := decodeSnapshot[T](s.codec, data, Metadata{Revision: ""})
+	var zeroRevision Revision
+	next, savedValue, err := decodeSnapshot[T](
+		s.codec,
+		data,
+		zeroRevision,
+	)
 	if err != nil {
 		s.logger.ErrorContext(ctx, "put configuration", "error", err)
 		return Entry[T]{}, err
 	}
-	metadata, err := s.provider.PutIfRevision(ctx, data, entry.Metadata)
+	revision, err := s.provider.PutIfRevision(ctx, data, entry.Revision.ID)
 	if err != nil {
 		putErr := fmt.Errorf("sundial: put configuration: %w", err)
 		s.logger.ErrorContext(ctx, "put configuration", "error", putErr)
 		return Entry[T]{}, putErr
 	}
 
-	next.metadata = metadata
+	next.revision = revision
 	s.snapshot.Store(next)
-	s.logger.DebugContext(ctx, "put configuration", "revision", metadata.Revision)
-	return Entry[T]{Value: savedValue, Metadata: metadata}, nil
+	s.logger.DebugContext(ctx, "put configuration", "revision_id", revision.ID)
+	return Entry[T]{Value: savedValue, Revision: revision}, nil
 }
 
 func (s *Client[T]) loadSnapshot(ctx context.Context) (*snapshot, Entry[T], error) {
-	data, metadata, err := s.provider.Get(ctx)
+	data, revision, err := s.provider.Get(ctx)
 	if err != nil {
 		return nil, Entry[T]{}, fmt.Errorf("sundial: get configuration: %w", err)
 	}
 
-	next, config, err := decodeSnapshot[T](s.codec, data, metadata)
+	next, config, err := decodeSnapshot[T](s.codec, data, revision)
 	if err != nil {
 		return nil, Entry[T]{}, err
 	}
-	return next, Entry[T]{Value: config, Metadata: metadata}, nil
+	return next, Entry[T]{Value: config, Revision: revision}, nil
 }

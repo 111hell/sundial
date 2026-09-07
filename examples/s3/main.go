@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -30,32 +29,36 @@ func main() {
 
 func run() error {
 	port := flag.Int("port", -1, "update the server port; negative is read-only")
+	initialConfig := flag.String("init", "", "publish an initial configuration file before loading")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	store, err := s3provider.New[config](
-		ctx,
-		&s3provider.Config{
-			Region:       os.Getenv("AWS_REGION"),
-			Bucket:       os.Getenv("SUNDIAL_S3_BUCKET"),
-			PathPrefix:   os.Getenv("SUNDIAL_S3_PATH_PREFIX"),
-			Key:          os.Getenv("SUNDIAL_S3_KEY"),
-			Endpoint:     "",
-			UsePathStyle: false,
-			// Zero uses the default 30-second interval.
-			WatchInterval: 0,
-		},
-		// Optional: called after a changed configuration is reloaded.
-		sundial.WithOnChange(func(entry sundial.Entry[config]) {
-			printEntry("reloaded", entry)
-		}),
-		// Optional: called when automatic reload fails.
-		sundial.WithOnError[config](func(reloadErr error) {
-			log.Printf("reload configuration: %v", reloadErr)
-		}),
-	)
+	provider, err := s3provider.NewProvider(ctx, &s3provider.Config{
+		Region:             os.Getenv("AWS_REGION"),
+		Bucket:             os.Getenv("SUNDIAL_S3_BUCKET"),
+		CurrentRevisionKey: os.Getenv("SUNDIAL_S3_CURRENT_REVISION_KEY"),
+		RevisionKeyPrefix:  os.Getenv("SUNDIAL_S3_REVISION_KEY_PREFIX"),
+		Endpoint:           "",
+		UsePathStyle:       false,
+		WatchInterval:      0,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *initialConfig != "" {
+		data, readErr := os.ReadFile(*initialConfig)
+		if readErr != nil {
+			return fmt.Errorf("read initial configuration: %w", readErr)
+		}
+		if _, putErr := provider.Put(ctx, data); putErr != nil {
+			return fmt.Errorf("publish initial configuration: %w", putErr)
+		}
+	}
+
+	store, err := sundial.New[config](ctx, provider)
 	if err != nil {
 		return err
 	}
@@ -68,14 +71,11 @@ func run() error {
 
 	if *port >= 0 {
 		entry.Value.Server.Port = *port
-		updatedEntry, putErr := store.Put(ctx, entry)
-		if putErr != nil {
-			if sundial.IsConflict(putErr) {
-				return errors.New("configuration changed before it could be saved")
-			}
-			return fmt.Errorf("put configuration: %w", putErr)
+		entry, err = store.Put(ctx, entry)
+		if err != nil {
+			return fmt.Errorf("update configuration: %w", err)
 		}
-		printEntry("updated", updatedEntry)
+		printEntry("updated", entry)
 	}
 
 	return nil
@@ -83,11 +83,11 @@ func run() error {
 
 func printEntry(event string, entry sundial.Entry[config]) {
 	log.Printf(
-		"%s: host=%s port=%d debug=%t revision=%s",
+		"%s: host=%s port=%d debug=%t revision_id=%s",
 		event,
 		entry.Value.Server.Host,
 		entry.Value.Server.Port,
 		entry.Value.Debug,
-		entry.Metadata.Revision,
+		entry.Revision.ID,
 	)
 }

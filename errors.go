@@ -9,12 +9,28 @@ var (
 	ErrConflict = errors.New("sundial: conflict")
 	// ErrEmptyDocument reports an empty configuration document.
 	ErrEmptyDocument = errors.New("sundial: empty configuration document")
+	// ErrUnsupported reports that a Provider does not implement an optional capability.
+	ErrUnsupported = errors.New("sundial: unsupported operation")
+	// ErrInvalidRevision reports corrupt immutable revision data.
+	ErrInvalidRevision = errors.New("sundial: invalid revision")
 )
 
+// IsNotFound reports whether err indicates a missing configuration document.
 func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)
 }
 
+// IsConflict reports whether err indicates a stale configuration revision.
 func IsConflict(err error) bool {
 	return errors.Is(err, ErrConflict)
+}
+
+// IsUnsupported reports whether err indicates an unsupported Provider capability.
+func IsUnsupported(err error) bool {
+	return errors.Is(err, ErrUnsupported)
+}
+
+// IsInvalidRevision reports whether err indicates corrupt immutable revision data.
+func IsInvalidRevision(err error) bool {
+	return errors.Is(err, ErrInvalidRevision)
 }

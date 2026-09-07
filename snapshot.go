@@ -9,18 +9,18 @@ import (
 )
 
 // snapshot is one immutable encoded configuration state published for
-// concurrent reads. The hash tracks content and metadata tracks the Provider
-// state paired with the document.
+// concurrent reads. The hash tracks content and revision tracks the Provider
+// revision paired with the document.
 type snapshot struct {
 	data     []byte
 	hash     [sha256.Size]byte
-	metadata Metadata
+	revision Revision
 }
 
 func decodeSnapshot[T any](
 	documentCodec codec.Codec,
 	data []byte,
-	metadata Metadata,
+	revision Revision,
 ) (*snapshot, T, error) {
 	config, err := decodeConfig[T](documentCodec, data)
 	if err != nil {
@@ -30,7 +30,7 @@ func decodeSnapshot[T any](
 	return &snapshot{
 		data:     cloneBytes(data),
 		hash:     sha256.Sum256(data),
-		metadata: metadata,
+		revision: revision,
 	}, config, nil
 }
 

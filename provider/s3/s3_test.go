@@ -1,15 +1,18 @@
 package s3
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
-	"strings"
+	"slices"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
@@ -17,18 +20,30 @@ import (
 	"github.com/sundayfun/sundial"
 )
 
+type storedObject struct {
+	data []byte
+	etag string
+}
+
 type testClient struct {
+	mu                         sync.Mutex
+	objects                    map[string]storedObject
+	sequence                   int
+	getCount                   int
+	failNextCurrentRevisionCAS bool
+
 	headOutput *awss3.HeadObjectOutput
 	headErr    error
 	headInput  *awss3.HeadObjectInput
 	head       func(context.Context, *awss3.HeadObjectInput) (*awss3.HeadObjectOutput, error)
-	getOutput  *awss3.GetObjectOutput
-	getErr     error
-	getInput   *awss3.GetObjectInput
-	putOutput  *awss3.PutObjectOutput
-	putErr     error
-	putInput   *awss3.PutObjectInput
-	putData    []byte
+}
+
+type typedConfig struct {
+	Port int `json:"port"`
+}
+
+func newTestClient() *testClient {
+	return &testClient{objects: make(map[string]storedObject)}
 }
 
 func (c *testClient) HeadObject(
@@ -40,7 +55,16 @@ func (c *testClient) HeadObject(
 	if c.head != nil {
 		return c.head(ctx, input)
 	}
-	return c.headOutput, c.headErr
+	if c.headOutput != nil || c.headErr != nil {
+		return c.headOutput, c.headErr
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	object, ok := c.objects[aws.ToString(input.Key)]
+	if !ok {
+		return nil, &smithy.GenericAPIError{Code: errorCodeNoSuchKey}
+	}
+	return &awss3.HeadObjectOutput{ETag: aws.String(object.etag)}, nil
 }
 
 func (c *testClient) GetObject(
@@ -48,8 +72,17 @@ func (c *testClient) GetObject(
 	input *awss3.GetObjectInput,
 	_ ...func(*awss3.Options),
 ) (*awss3.GetObjectOutput, error) {
-	c.getInput = input
-	return c.getOutput, c.getErr
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.getCount++
+	object, ok := c.objects[aws.ToString(input.Key)]
+	if !ok {
+		return nil, &smithy.GenericAPIError{Code: errorCodeNoSuchKey}
+	}
+	return &awss3.GetObjectOutput{
+		Body: io.NopCloser(bytes.NewReader(slices.Clone(object.data))),
+		ETag: aws.String(object.etag),
+	}, nil
 }
 
 func (c *testClient) PutObject(
@@ -57,37 +90,41 @@ func (c *testClient) PutObject(
 	input *awss3.PutObjectInput,
 	_ ...func(*awss3.Options),
 ) (*awss3.PutObjectOutput, error) {
-	c.putInput = input
 	data, err := io.ReadAll(input.Body)
 	if err != nil {
 		return nil, err
 	}
-	c.putData = data
-	return c.putOutput, c.putErr
-}
-
-type failingReader struct {
-	err error
-}
-
-func (r failingReader) Read([]byte) (int, error) {
-	return 0, r.err
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := aws.ToString(input.Key)
+	current, exists := c.objects[key]
+	if input.IfNoneMatch != nil && aws.ToString(input.IfNoneMatch) == "*" && exists {
+		return nil, &smithy.GenericAPIError{Code: errorCodePreconditionFailed}
+	}
+	if input.IfMatch != nil && (!exists || current.etag != aws.ToString(input.IfMatch)) {
+		return nil, &smithy.GenericAPIError{Code: errorCodePreconditionFailed}
+	}
+	if c.failNextCurrentRevisionCAS && input.IfMatch != nil {
+		c.failNextCurrentRevisionCAS = false
+		return nil, &smithy.GenericAPIError{Code: errorCodePreconditionFailed}
+	}
+	c.sequence++
+	etag := fmt.Sprintf("\"etag-%d\"", c.sequence)
+	c.objects[key] = storedObject{data: slices.Clone(data), etag: etag}
+	return &awss3.PutObjectOutput{ETag: aws.String(etag)}, nil
 }
 
 func TestNewProviderCreatesAWSClientFromConfig(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test-access-key")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
 
-	provider, err := NewProvider(context.Background(), &Config{
-		Region:       "us-east-1",
-		Bucket:       "configs",
-		PathPrefix:   "service-a/production",
-		Key:          "app.json",
-		Endpoint:     "https://s3.example.com",
-		UsePathStyle: true,
+	provider, err := NewProvider(t.Context(), &Config{
+		Region: "us-east-1", Bucket: "configs",
+		CurrentRevisionKey: "service-a/production/current.pointer",
+		RevisionKeyPrefix:  "service-a/production/history/",
+		Endpoint:           "https://s3.example.com", UsePathStyle: true,
 	})
 	require.NoError(t, err)
-
 	client, ok := provider.client.(*awss3.Client)
 	require.True(t, ok)
 	options := client.Options()
@@ -95,429 +132,412 @@ func TestNewProviderCreatesAWSClientFromConfig(t *testing.T) {
 	require.NotNil(t, options.BaseEndpoint)
 	assert.Equal(t, "https://s3.example.com", *options.BaseEndpoint)
 	assert.True(t, options.UsePathStyle)
-	assert.Equal(t, "service-a/production/app.json", provider.key)
+	assert.Equal(t, "service-a/production/current.pointer", provider.currentRevisionKey)
+	assert.Equal(t, "service-a/production/history/", provider.revisionKeyPrefix)
 	assert.Equal(t, defaultWatchInterval, provider.watchInterval)
-}
-
-func TestPathPrefixWithPathStyle(t *testing.T) {
-	t.Setenv("AWS_ACCESS_KEY_ID", "test-access-key")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
-
-	requestPath := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		requestPath <- request.URL.EscapedPath()
-		writer.Header().Set("ETag", `"revision-1"`)
-		writer.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	provider, err := NewProvider(context.Background(), &Config{
-		Region:       "us-east-1",
-		Bucket:       "configs",
-		PathPrefix:   "service-a/production",
-		Key:          "app.json",
-		Endpoint:     server.URL,
-		UsePathStyle: true,
-	})
-	require.NoError(t, err)
-
-	_, err = provider.Put(context.Background(), []byte("config"))
-	require.NoError(t, err)
-	assert.Equal(t, "/configs/service-a/production/app.json", <-requestPath)
-}
-
-func TestNewRejectsInvalidExistingObject(t *testing.T) {
-	t.Setenv("AWS_ACCESS_KEY_ID", "test-access-key")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
-
-	requestTarget := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		requestTarget <- request.Method + " " + request.URL.EscapedPath()
-		writer.Header().Set("ETag", `"revision-1"`)
-		writer.WriteHeader(http.StatusOK)
-		if _, writeErr := writer.Write([]byte(`{"enabled":`)); writeErr != nil {
-			return
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	_, err := New[struct {
-		Enabled bool `json:"enabled"`
-	}](t.Context(), &Config{
-		Region:       "us-east-1",
-		Bucket:       "configs",
-		PathPrefix:   "service-a/production",
-		Key:          "app.json",
-		Endpoint:     server.URL,
-		UsePathStyle: true,
-	})
-	require.ErrorContains(t, err, "decode configuration")
-	assert.Equal(t, "GET /configs/service-a/production/app.json", <-requestTarget)
 }
 
 func TestNewValidatesConfig(t *testing.T) {
 	t.Parallel()
-
 	tests := []struct {
 		name    string
 		config  *Config
 		wantErr error
 	}{
-		{
-			name:    "missing config",
-			wantErr: ErrConfigRequired,
-		},
-		{
-			name:    "missing bucket",
-			config:  &Config{Key: "app.json"},
-			wantErr: ErrBucketRequired,
-		},
-		{
-			name:    "missing key",
-			config:  &Config{Bucket: "configs"},
-			wantErr: ErrKeyRequired,
-		},
-		{
-			name: "negative watch interval",
-			config: &Config{
-				Bucket:        "configs",
-				Key:           "app.json",
-				WatchInterval: -time.Second,
-			},
-			wantErr: ErrWatchIntervalInvalid,
-		},
+		{name: "missing config", wantErr: ErrConfigRequired},
+		{name: "missing bucket", config: &Config{
+			CurrentRevisionKey: "app/current", RevisionKeyPrefix: "app/revisions",
+		}, wantErr: ErrBucketRequired},
+		{name: "missing current revision key", config: &Config{
+			Bucket: "configs", RevisionKeyPrefix: "app/revisions",
+		}, wantErr: ErrCurrentRevisionKeyRequired},
+		{name: "missing revision key prefix", config: &Config{
+			Bucket: "configs", CurrentRevisionKey: "app/current",
+		}, wantErr: ErrRevisionKeyPrefixRequired},
+		{name: "negative interval", config: &Config{
+			Bucket: "configs", CurrentRevisionKey: "app/current",
+			RevisionKeyPrefix: "app/revisions", WatchInterval: -time.Second,
+		}, wantErr: ErrWatchIntervalInvalid},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
-			_, err := New[struct{}](context.Background(), tt.config)
+			_, err := NewProvider(context.Background(), tt.config)
 			require.ErrorIs(t, err, tt.wantErr)
 		})
 	}
 }
 
-func TestNewProviderAppliesPathPrefix(t *testing.T) {
+func TestProviderPublishesAndReadsImmutableRevisions(t *testing.T) {
 	t.Parallel()
+	provider := newVersionedTestProvider()
 
-	tests := []struct {
-		name       string
-		pathPrefix string
-		key        string
-		want       string
-	}{
-		{
-			name: "empty prefix preserves key",
-			key:  "production/app.json",
-			want: "production/app.json",
-		},
-		{
-			name:       "prefix namespaces key",
-			pathPrefix: "service-a/production",
-			key:        "app.json",
-			want:       "service-a/production/app.json",
-		},
-		{
-			name:       "boundary slashes are normalized",
-			pathPrefix: "service-a/production/",
-			key:        "/app.json",
-			want:       "service-a/production/app.json",
-		},
-		{
-			name:       "key contents are not cleaned",
-			pathPrefix: "service-a",
-			key:        "../app.json",
-			want:       "service-a/../app.json",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			provider := newProvider(&testClient{}, &Config{
-				Bucket:     "configs",
-				PathPrefix: tt.pathPrefix,
-				Key:        tt.key,
-			})
-
-			assert.Equal(t, tt.want, provider.key)
-		})
-	}
-}
-
-func TestGet(t *testing.T) {
-	t.Parallel()
-
-	revision := `"revision-1"`
-	readErr := errors.New("read failed")
-	missingKeyErr := &smithy.GenericAPIError{Code: "NoSuchKey"}
-	notFoundErr := &smithy.GenericAPIError{Code: "NotFound"}
-	missingBucketErr := &smithy.GenericAPIError{Code: "NoSuchBucket"}
-	backendErr := errors.New("backend failed")
-	tests := []struct {
-		name         string
-		client       *testClient
-		wantData     []byte
-		wantRevision string
-		wantErrors   []error
-		notWantError error
-	}{
-		{
-			name: "returns data and ETag",
-			client: &testClient{getOutput: &awss3.GetObjectOutput{
-				Body: io.NopCloser(strings.NewReader(`{"enabled":true}`)),
-				ETag: &revision,
-			}},
-			wantData:     []byte(`{"enabled":true}`),
-			wantRevision: revision,
-		},
-		{
-			name:       "maps NoSuchKey to not found",
-			client:     &testClient{getErr: missingKeyErr},
-			wantErrors: []error{sundial.ErrNotFound, missingKeyErr},
-		},
-		{
-			name:       "maps NotFound to not found",
-			client:     &testClient{getErr: notFoundErr},
-			wantErrors: []error{sundial.ErrNotFound, notFoundErr},
-		},
-		{
-			name:         "preserves missing bucket error",
-			client:       &testClient{getErr: missingBucketErr},
-			wantErrors:   []error{missingBucketErr},
-			notWantError: sundial.ErrNotFound,
-		},
-		{
-			name:         "preserves backend error",
-			client:       &testClient{getErr: backendErr},
-			wantErrors:   []error{backendErr},
-			notWantError: sundial.ErrNotFound,
-		},
-		{
-			name: "returns body read error",
-			client: &testClient{getOutput: &awss3.GetObjectOutput{
-				Body: io.NopCloser(failingReader{err: readErr}),
-				ETag: &revision,
-			}},
-			wantErrors: []error{readErr},
-		},
-		{
-			name: "rejects missing ETag",
-			client: &testClient{getOutput: &awss3.GetObjectOutput{
-				Body: io.NopCloser(strings.NewReader("config")),
-			}},
-			wantErrors: []error{ErrEmptyETag},
-		},
-		{
-			name: "rejects empty ETag",
-			client: &testClient{getOutput: &awss3.GetObjectOutput{
-				Body: io.NopCloser(strings.NewReader("config")),
-				ETag: new(string),
-			}},
-			wantErrors: []error{ErrEmptyETag},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			provider := newProvider(tt.client, &Config{Bucket: "configs", Key: "app.json"})
-			data, metadata, err := provider.Get(context.Background())
-			if len(tt.wantErrors) > 0 {
-				require.Error(t, err)
-				for _, wantErr := range tt.wantErrors {
-					require.ErrorIs(t, err, wantErr)
-				}
-				if tt.notWantError != nil {
-					require.NotErrorIs(t, err, tt.notWantError)
-				}
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantData, data)
-			assert.Equal(t, tt.wantRevision, metadata.Revision)
-			require.NotNil(t, tt.client.getInput)
-			assert.Equal(t, "configs", *tt.client.getInput.Bucket)
-			assert.Equal(t, "app.json", *tt.client.getInput.Key)
-		})
-	}
-}
-
-func TestPut(t *testing.T) {
-	t.Parallel()
-
-	revision := `"revision-1"`
-	backendErr := errors.New("backend failed")
-	tests := []struct {
-		name         string
-		client       *testClient
-		wantRevision string
-		wantErr      error
-	}{
-		{
-			name:         "writes without revision condition",
-			client:       &testClient{putOutput: &awss3.PutObjectOutput{ETag: &revision}},
-			wantRevision: revision,
-		},
-		{
-			name:    "preserves backend error",
-			client:  &testClient{putErr: backendErr},
-			wantErr: backendErr,
-		},
-		{
-			name:    "rejects missing ETag",
-			client:  &testClient{putOutput: &awss3.PutObjectOutput{}},
-			wantErr: ErrEmptyETag,
-		},
-		{
-			name:    "rejects empty ETag",
-			client:  &testClient{putOutput: &awss3.PutObjectOutput{ETag: new(string)}},
-			wantErr: ErrEmptyETag,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			provider := newProvider(tt.client, &Config{Bucket: "configs", Key: "app.json"})
-			metadata, err := provider.Put(context.Background(), []byte("config"))
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantRevision, metadata.Revision)
-			require.NotNil(t, tt.client.putInput)
-			assert.Nil(t, tt.client.putInput.IfMatch)
-			assert.Nil(t, tt.client.putInput.IfNoneMatch)
-			assert.Equal(t, "configs", *tt.client.putInput.Bucket)
-			assert.Equal(t, "app.json", *tt.client.putInput.Key)
-			assert.Equal(t, []byte("config"), tt.client.putData)
-		})
-	}
-}
-
-func TestPutIfRevisionUpdatesMatchingRevision(t *testing.T) {
-	t.Parallel()
-
-	updatedRevision := `"revision-2"`
-	expected := sundial.Metadata{Revision: `"revision-1"`}
-	client := &testClient{putOutput: &awss3.PutObjectOutput{ETag: &updatedRevision}}
-	provider := newProvider(client, &Config{Bucket: "configs", Key: "app.json"})
-
-	metadata, err := provider.PutIfRevision(context.Background(), []byte("config"), expected)
+	firstRevision, err := provider.Put(t.Context(), []byte(`{"port":8080}`))
 	require.NoError(t, err)
-	assert.Equal(t, updatedRevision, metadata.Revision)
-	assertConditionalPut(t, client, expected.Revision)
+	data, loadedRevision, err := provider.Get(t.Context())
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"port":8080}`, string(data))
+	assert.Equal(t, firstRevision, loadedRevision)
+
+	secondRevision, err := provider.PutIfRevision(
+		t.Context(), []byte(`{"port":9090}`), firstRevision.ID,
+	)
+	require.NoError(t, err)
+	assert.NotEqual(t, firstRevision.ID, secondRevision.ID)
+	assert.Empty(t, firstRevision.ParentID)
+	assert.Equal(t, firstRevision.ID, secondRevision.ParentID)
+	assert.False(t, firstRevision.CreatedAt.IsZero())
+	assert.False(t, secondRevision.CreatedAt.IsZero())
+
+	revisions, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, []sundial.Revision{secondRevision, firstRevision}, revisions)
+	oldData, oldRevision, err := provider.GetRevision(t.Context(), revisions[1].ID)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"port":8080}`, string(oldData))
+	assert.Equal(t, revisions[1], oldRevision)
 }
 
-func TestPutIfRevisionRejectsEmptyRevision(t *testing.T) {
+func TestListRevisionsLimitAndOffset(t *testing.T) {
 	t.Parallel()
+	provider := newVersionedTestProvider()
+	revision, err := provider.Put(t.Context(), []byte("first"))
+	require.NoError(t, err)
+	revision, err = provider.PutIfRevision(t.Context(), []byte("second"), revision.ID)
+	require.NoError(t, err)
+	_, err = provider.PutIfRevision(t.Context(), []byte("third"), revision.ID)
+	require.NoError(t, err)
 
-	client := &testClient{}
-	provider := newProvider(client, &Config{Bucket: "configs", Key: "app.json"})
+	all, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
+	require.NoError(t, err)
+	require.Len(t, all, 3)
 
-	_, err := provider.PutIfRevision(context.Background(), []byte("config"), sundial.Metadata{})
-	require.ErrorIs(t, err, sundial.ErrConflict)
-	assert.Nil(t, client.putInput)
+	client, ok := provider.client.(*testClient)
+	require.True(t, ok)
+	client.mu.Lock()
+	client.getCount = 0
+	client.mu.Unlock()
+	page, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{
+		Limit: 1, Offset: 1,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, all[1:2], page)
+	client.mu.Lock()
+	assert.Equal(t, 3, client.getCount)
+	client.mu.Unlock()
+
+	empty, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{Offset: 3})
+	require.NoError(t, err)
+	assert.Empty(t, empty)
 }
 
-func TestPutIfRevisionReturnsErrors(t *testing.T) {
+func TestListRevisionsUsesDefaultsForNegativeOptions(t *testing.T) {
 	t.Parallel()
+	provider := newVersionedTestProvider()
+	revision, err := provider.Put(t.Context(), []byte("first"))
+	require.NoError(t, err)
+	_, err = provider.PutIfRevision(t.Context(), []byte("second"), revision.ID)
+	require.NoError(t, err)
 
-	preconditionErr := &smithy.GenericAPIError{Code: "PreconditionFailed"}
-	conditionalConflictErr := &smithy.GenericAPIError{Code: "ConditionalRequestConflict"}
-	missingKeyErr := &smithy.GenericAPIError{Code: "NoSuchKey"}
-	notFoundErr := &smithy.GenericAPIError{Code: "NotFound"}
-	missingBucketErr := &smithy.GenericAPIError{Code: "NoSuchBucket"}
-	backendErr := errors.New("backend failed")
-	tests := []struct {
-		name         string
-		client       *testClient
-		wantErrors   []error
-		notWantError error
-	}{
-		{
-			name:       "maps precondition failure to conflict",
-			client:     &testClient{putErr: preconditionErr},
-			wantErrors: []error{sundial.ErrConflict, preconditionErr},
-		},
-		{
-			name:       "maps conditional request conflict",
-			client:     &testClient{putErr: conditionalConflictErr},
-			wantErrors: []error{sundial.ErrConflict, conditionalConflictErr},
-		},
-		{
-			name:       "maps deleted object to conflict",
-			client:     &testClient{putErr: missingKeyErr},
-			wantErrors: []error{sundial.ErrConflict, missingKeyErr},
-		},
-		{
-			name:       "maps NotFound to conflict",
-			client:     &testClient{putErr: notFoundErr},
-			wantErrors: []error{sundial.ErrConflict, notFoundErr},
-		},
-		{
-			name:         "preserves missing bucket error",
-			client:       &testClient{putErr: missingBucketErr},
-			wantErrors:   []error{missingBucketErr},
-			notWantError: sundial.ErrConflict,
-		},
-		{
-			name:         "preserves backend error",
-			client:       &testClient{putErr: backendErr},
-			wantErrors:   []error{backendErr},
-			notWantError: sundial.ErrConflict,
-		},
-		{
-			name:       "rejects missing ETag",
-			client:     &testClient{putOutput: &awss3.PutObjectOutput{}},
-			wantErrors: []error{ErrEmptyETag},
-		},
-		{
-			name:       "rejects empty ETag",
-			client:     &testClient{putOutput: &awss3.PutObjectOutput{ETag: new(string)}},
-			wantErrors: []error{ErrEmptyETag},
-		},
+	want, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
+	require.NoError(t, err)
+	got, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{
+		Limit: -1, Offset: -1,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+func TestListRevisionsDefaultsToBoundedHistory(t *testing.T) {
+	t.Parallel()
+	provider := newVersionedTestProvider()
+	revision, err := provider.Put(t.Context(), []byte("0"))
+	require.NoError(t, err)
+	for index := 1; index <= sundial.DefaultListRevisionsLimit; index++ {
+		revision, err = provider.PutIfRevision(
+			t.Context(),
+			[]byte(strconv.Itoa(index)),
+			revision.ID,
+		)
+		require.NoError(t, err)
 	}
-	expectedRevision := `"revision-1"`
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	revisions, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
+	require.NoError(t, err)
+	assert.Len(t, revisions, sundial.DefaultListRevisionsLimit)
+	assert.Equal(t, revision.ID, revisions[0].ID)
+}
+
+func TestProviderUsesConfiguredObjectNamesVerbatim(t *testing.T) {
+	t.Parallel()
+	client := newTestClient()
+	provider := newProvider(client, &Config{
+		Bucket:             "configs",
+		CurrentRevisionKey: "custom/current.pointer",
+		RevisionKeyPrefix:  "custom/snapshot-",
+		WatchInterval:      time.Hour,
+	})
+
+	_, err := provider.Put(t.Context(), []byte("config"))
+	require.NoError(t, err)
+	currentRevision, _, err := provider.getCurrentRevision(t.Context())
+	require.NoError(t, err)
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	assert.Contains(t, client.objects, "custom/current.pointer")
+	assert.Contains(t, client.objects, "custom/snapshot-"+currentRevision)
+	assert.Len(t, client.objects, 2)
+}
+
+func TestCurrentRevisionConflictLeavesConfigurationUnchanged(t *testing.T) {
+	t.Parallel()
+	client := newTestClient()
+	provider := newProvider(client, testConfig())
+	revision, err := provider.Put(t.Context(), []byte("first"))
+	require.NoError(t, err)
+	client.failNextCurrentRevisionCAS = true
+
+	_, err = provider.PutIfRevision(t.Context(), []byte("orphan"), revision.ID)
+	require.ErrorIs(t, err, sundial.ErrConflict)
+	data, current, err := provider.Get(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []byte("first"), data)
+	assert.Equal(t, revision, current)
+	revisions, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
+	require.NoError(t, err)
+	assert.Len(t, revisions, 1)
+	client.mu.Lock()
+	assert.Len(t, client.objects, 3)
+	client.mu.Unlock()
+}
+
+func TestPutReturnsConflictWithoutRetry(t *testing.T) {
+	t.Parallel()
+	client := newTestClient()
+	provider := newProvider(client, testConfig())
+	first, err := provider.Put(t.Context(), []byte("first"))
+	require.NoError(t, err)
+	client.failNextCurrentRevisionCAS = true
+
+	_, err = provider.Put(t.Context(), []byte("second"))
+	require.ErrorIs(t, err, sundial.ErrConflict)
+	data, current, err := provider.Get(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []byte("first"), data)
+	assert.Equal(t, first, current)
+}
+
+func TestConcurrentPublishAllowsExactlyOneWriter(t *testing.T) {
+	t.Parallel()
+	provider := newVersionedTestProvider()
+	revision, err := provider.Put(t.Context(), []byte("base"))
+	require.NoError(t, err)
+
+	results := make(chan error, 2)
+	var ready sync.WaitGroup
+	ready.Add(2)
+	start := make(chan struct{})
+	for _, content := range [][]byte{[]byte("left"), []byte("right")} {
+		go func() {
+			ready.Done()
+			<-start
+			_, putErr := provider.PutIfRevision(t.Context(), content, revision.ID)
+			results <- putErr
+		}()
+	}
+	ready.Wait()
+	close(start)
+
+	var successes int
+	var conflicts int
+	for range 2 {
+		err := <-results
+		if err == nil {
+			successes++
+		} else if errors.Is(err, sundial.ErrConflict) {
+			conflicts++
+		} else {
+			t.Fatalf("PutIfRevision() error = %v", err)
+		}
+	}
+	assert.Equal(t, 1, successes)
+	assert.Equal(t, 1, conflicts)
+}
+
+func TestRestoreRevision(t *testing.T) {
+	t.Parallel()
+	provider := newVersionedTestProvider()
+	firstRevision, err := provider.Put(t.Context(), []byte("first"))
+	require.NoError(t, err)
+	secondRevision, err := provider.PutIfRevision(t.Context(), []byte("second"), firstRevision.ID)
+	require.NoError(t, err)
+
+	revisions, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
+	require.NoError(t, err)
+	require.Len(t, revisions, 2)
+
+	restoredData, restoredRevision, err := provider.RestoreRevision(
+		t.Context(), revisions[1].ID, secondRevision.ID,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("first"), restoredData)
+	assert.NotEqual(t, secondRevision.ID, restoredRevision.ID)
+	assert.Equal(t, secondRevision.ID, restoredRevision.ParentID)
+
+	revisions, err = provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, []sundial.Revision{restoredRevision, secondRevision, firstRevision}, revisions)
+}
+
+func TestStaleRestoreReturnsConflict(t *testing.T) {
+	t.Parallel()
+	client := newTestClient()
+	provider := newProvider(client, testConfig())
+	first, err := provider.Put(t.Context(), []byte("first"))
+	require.NoError(t, err)
+	second, err := provider.PutIfRevision(t.Context(), []byte("second"), first.ID)
+	require.NoError(t, err)
+
+	revisions, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
+	require.NoError(t, err)
+	client.failNextCurrentRevisionCAS = true
+	_, _, err = provider.RestoreRevision(
+		t.Context(), revisions[1].ID, second.ID,
+	)
+	require.ErrorIs(t, err, sundial.ErrConflict)
+	data, current, err := provider.Get(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []byte("second"), data)
+	assert.Equal(t, second, current)
+}
+
+func TestGetRevisionRejectsInvalidID(t *testing.T) {
+	t.Parallel()
+	provider := newVersionedTestProvider()
+	_, _, err := provider.GetRevision(t.Context(), "../../current")
+	require.ErrorIs(t, err, sundial.ErrInvalidRevision)
+}
+
+func TestGetDoesNotHideInvalidCurrentRevision(t *testing.T) {
+	t.Parallel()
+	provider := newVersionedTestProvider()
+	_, err := provider.Put(t.Context(), []byte("stable"))
+	require.NoError(t, err)
+	client, ok := provider.client.(*testClient)
+	require.True(t, ok)
+	client.mu.Lock()
+	currentObject := client.objects[provider.currentRevisionKey]
+	currentObject.data = []byte("not-a-revision-id")
+	client.objects[provider.currentRevisionKey] = currentObject
+	client.mu.Unlock()
+
+	_, _, err = provider.Get(t.Context())
+	require.ErrorContains(t, err, "decode current revision")
+}
+
+func TestClientRevisionOperations(t *testing.T) {
+	t.Parallel()
+	provider := newVersionedTestProvider()
+	original := []byte(`{ "port":8080, "unknown":"preserve" }`)
+	first, err := provider.Put(t.Context(), original)
+	require.NoError(t, err)
+	client, err := sundial.New[typedConfig](t.Context(), provider)
+	require.NoError(t, err)
+
+	entry, err := client.Get()
+	require.NoError(t, err)
+	entry.Value.Port = 9090
+	_, err = client.Put(t.Context(), entry)
+	require.NoError(t, err)
+	revisions, err := client.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
+	require.NoError(t, err)
+	require.Len(t, revisions, 2)
+	historical, historicalRevision, err := client.GetRevision(t.Context(), revisions[1].ID)
+	require.NoError(t, err)
+	assert.Equal(t, 8080, historical.Port)
+	assert.Equal(t, revisions[1], historicalRevision)
+
+	restored, err := client.RestoreRevision(
+		t.Context(),
+		revisions[1].ID,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 8080, restored.Value.Port)
+	assert.NotEqual(t, first.ID, restored.Revision.ID)
+	assert.Equal(t, revisions[0].ID, restored.Revision.ParentID)
+	data, revision, err := provider.Get(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, original, data)
+	assert.Equal(t, restored.Revision, revision)
+}
+
+func TestClientRestoreRejectsUndecodableHistoryBeforeWriting(t *testing.T) {
+	t.Parallel()
+	for _, content := range []string{`{"port":"old-schema"}`, `{`, " "} {
+		t.Run(content, func(t *testing.T) {
 			t.Parallel()
+			provider := newVersionedTestProvider()
+			old, err := provider.Put(t.Context(), []byte(content))
+			require.NoError(t, err)
+			goodData := []byte(`{"port":8080}`)
+			good, err := provider.Put(t.Context(), goodData)
+			require.NoError(t, err)
+			client, err := sundial.New[typedConfig](t.Context(), provider)
+			require.NoError(t, err)
+			storage, ok := provider.client.(*testClient)
+			require.True(t, ok)
+			storage.mu.Lock()
+			writes := storage.sequence
+			storage.mu.Unlock()
 
-			provider := newProvider(tt.client, &Config{Bucket: "configs", Key: "app.json"})
-			_, err := provider.PutIfRevision(
-				context.Background(),
-				[]byte("config"),
-				sundial.Metadata{Revision: expectedRevision},
-			)
+			_, err = client.RestoreRevision(t.Context(), old.ID)
 			require.Error(t, err)
-			for _, wantErr := range tt.wantErrors {
-				require.ErrorIs(t, err, wantErr)
-			}
-			if tt.notWantError != nil {
-				require.NotErrorIs(t, err, tt.notWantError)
-			}
-			assertConditionalPut(t, tt.client, expectedRevision)
+			data, revision, err := provider.Get(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, goodData, data)
+			assert.Equal(t, good, revision)
+			local, err := client.Get()
+			require.NoError(t, err)
+			assert.Equal(t, good, local.Revision)
+			assert.Equal(t, 8080, local.Value.Port)
+			storage.mu.Lock()
+			defer storage.mu.Unlock()
+			assert.Equal(t, writes, storage.sequence)
 		})
 	}
 }
 
-func assertConditionalPut(t *testing.T, client *testClient, expectedRevision string) {
-	t.Helper()
+func TestClientRestoreConflictPreservesSnapshot(t *testing.T) {
+	t.Parallel()
+	storage := newTestClient()
+	provider := newProvider(storage, testConfig())
+	old, err := provider.Put(t.Context(), []byte(`{"port":8080}`))
+	require.NoError(t, err)
+	good, err := provider.Put(t.Context(), []byte(`{"port":9090}`))
+	require.NoError(t, err)
+	client, err := sundial.New[typedConfig](t.Context(), provider)
+	require.NoError(t, err)
+	storage.failNextCurrentRevisionCAS = true
 
-	require.NotNil(t, client.putInput)
-	require.NotNil(t, client.putInput.IfMatch)
-	assert.Equal(t, expectedRevision, *client.putInput.IfMatch)
-	assert.Nil(t, client.putInput.IfNoneMatch)
-	assert.Equal(t, "configs", *client.putInput.Bucket)
-	assert.Equal(t, "app.json", *client.putInput.Key)
-	assert.Equal(t, []byte("config"), client.putData)
+	_, err = client.RestoreRevision(t.Context(), old.ID)
+	require.ErrorIs(t, err, sundial.ErrConflict)
+	_, revision, err := provider.Get(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, good, revision)
+	local, err := client.Get()
+	require.NoError(t, err)
+	assert.Equal(t, good, local.Revision)
+	assert.Equal(t, 9090, local.Value.Port)
+}
+
+func newVersionedTestProvider() *Provider {
+	return newProvider(newTestClient(), testConfig())
+}
+
+func testConfig() *Config {
+	return &Config{
+		Bucket: "configs", CurrentRevisionKey: "service/production/current",
+		RevisionKeyPrefix: "service/production/history/", WatchInterval: time.Hour,
+	}
 }

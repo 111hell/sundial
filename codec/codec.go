@@ -3,6 +3,8 @@ package codec
 
 // Codec converts between configuration documents and Go values.
 type Codec interface {
+	// Encode returns the document encoding of v.
 	Encode(v any) ([]byte, error)
+	// Decode parses a document into v.
 	Decode(data []byte, v any) error
 }

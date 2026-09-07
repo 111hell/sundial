@@ -16,7 +16,7 @@ func (s *Client[T]) Reload(ctx context.Context) error {
 	}
 	if changed {
 		current := s.snapshot.Load()
-		s.logger.DebugContext(ctx, "reloaded configuration", "revision", current.metadata.Revision)
+		s.logger.DebugContext(ctx, "reloaded configuration", "revision_id", current.revision.ID)
 	}
 	return nil
 }
@@ -31,7 +31,7 @@ func (s *Client[T]) reload(ctx context.Context) (Entry[T], bool, error) {
 	}
 	current := s.snapshot.Load()
 	if next.hash == current.hash {
-		if next.metadata.Revision != current.metadata.Revision {
+		if next.revision.ID != current.revision.ID {
 			s.snapshot.Store(next)
 		}
 		return entry, false, nil

@@ -1,5 +1,7 @@
 # Sundial
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/sundayfun/sundial.svg)](https://pkg.go.dev/github.com/sundayfun/sundial)
+
 [简体中文](README.zh-CN.md)
 
 Sundial is a lightweight, extensible, type-safe configuration SDK for Go with
@@ -10,6 +12,7 @@ in-memory reads, persistent writes, and live updates.
 - **Type-safe access** — applications read their own configuration struct instead of string paths and `any` values.
 - **Fast reads** — `Get` reads only from an in-memory snapshot.
 - **Persistent writes** — `Put` conditionally saves one complete typed configuration document.
+- **Version history** — browse historical revisions and restore configuration.
 - **Live updates** — automatic reload keeps memory synchronized with external changes.
 - **Extensible storage and formats** — storage sources implement `Provider`; JSON works by default and other formats use codecs.
 
@@ -35,7 +38,8 @@ type Config struct {
 }
 ```
 
-The following example uses S3:
+The following example uses already initialized S3 objects. Use
+`NewProvider` and `Provider.Put` to publish the initial configuration explicitly.
 
 ```go
 ctx, cancel := context.WithCancel(context.Background())
@@ -44,7 +48,8 @@ defer cancel()
 configStore, err := s3provider.New[Config](ctx, &s3provider.Config{
 	Region: "us-east-1",
 	Bucket: "my-config-bucket",
-	Key:    "production/app.json",
+	CurrentRevisionKey: "production/app/current",
+	RevisionKeyPrefix:  "production/app/history/",
 })
 if err != nil {
 	log.Fatal(err)
@@ -81,12 +86,26 @@ if err != nil {
 }
 ```
 
-`Put` uses the revision in `entry.Metadata` and returns the codec-decoded saved
-`Entry` with its new revision. A stale revision returns `ErrConflict`. It does
-not merge or retry automatically.
+`Put` uses `entry.Revision.ID` and returns the codec-decoded saved `Entry` with
+its new `Revision`. A stale revision ID returns `ErrConflict`. It does not merge
+or retry automatically.
 
 JSON is used by default. Other formats can be configured with `WithCodec`.
 Storage implementations live under `provider/<source>`.
+
+### Revisions
+
+The caller configures `CurrentRevisionKey` and `RevisionKeyPrefix` explicitly:
+
+```text
+production/app/current
+production/app/history/<revision-id>
+```
+
+`Put` creates an immutable revision. `ListRevisions` and `GetRevision` read
+history. `RestoreRevision` copies a
+historical value into a new current revision. Values returned by `GetRevision`
+are detached from the current configuration.
 
 See the runnable [S3 example](examples/s3).
 
@@ -105,7 +124,7 @@ See the runnable [S3 example](examples/s3).
   automatic reload errors.
 - Canceling the context passed to `New` stops automatic reload.
 - `Get` is safe for concurrent use. `Put` calls are serialized per instance,
-  and stale revisions return `ErrConflict`.
+  and stale revision IDs return `ErrConflict`.
 
 ## License
 
