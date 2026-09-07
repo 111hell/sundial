@@ -2,8 +2,12 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
+	"github.com/oklog/ulid/v2"
 	"github.com/sundayfun/sundial"
 )
 
@@ -31,7 +35,7 @@ func (p *Provider) ListRevisions(
 	}
 	revisions := make([]sundial.Revision, 0, min(limit, sundial.DefaultListRevisionsLimit))
 	for current != "" {
-		_, revision, getErr := p.getContentByRevisionID(ctx, current)
+		revision, getErr := p.headRevision(ctx, current)
 		if getErr != nil {
 			return nil, fmt.Errorf("s3: list revisions: %w", getErr)
 		}
@@ -48,29 +52,21 @@ func (p *Provider) ListRevisions(
 	return revisions, nil
 }
 
-// RestoreRevision copies a historical value into a new current revision.
-func (p *Provider) RestoreRevision(
-	ctx context.Context,
-	revisionID string,
-	expectedRevisionID string,
-) ([]byte, sundial.Revision, error) {
-	if expectedRevisionID == "" {
-		return nil, sundial.Revision{}, fmt.Errorf("s3: restore revision: %w", sundial.ErrConflict)
+// headRevision reads history metadata.
+func (p *Provider) headRevision(ctx context.Context, revisionID string) (sundial.Revision, error) {
+	if _, err := ulid.ParseStrict(revisionID); err != nil {
+		return sundial.Revision{}, fmt.Errorf("s3: validate revision ID: %w", sundial.ErrInvalidRevision)
 	}
-	current, etag, err := p.getCurrentRevision(ctx)
+	key := p.revisionKey(revisionID)
+	object, err := p.client.HeadObject(ctx, &awss3.HeadObjectInput{Bucket: &p.bucket, Key: &key})
 	if err != nil {
-		return nil, sundial.Revision{}, err
+		if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
+			switch apiErr.ErrorCode() {
+			case errorCodeNoSuchKey, errorCodeNotFound:
+				return sundial.Revision{}, fmt.Errorf("s3: head revision: %w: %w", sundial.ErrNotFound, err)
+			}
+		}
+		return sundial.Revision{}, fmt.Errorf("s3: head revision: %w", err)
 	}
-	if current != expectedRevisionID {
-		return nil, sundial.Revision{}, fmt.Errorf("s3: restore revision: %w", sundial.ErrConflict)
-	}
-	data, _, err := p.getContentByRevisionID(ctx, revisionID)
-	if err != nil {
-		return nil, sundial.Revision{}, err
-	}
-	revision, err := p.publish(ctx, data, current, etag)
-	if err != nil {
-		return nil, sundial.Revision{}, err
-	}
-	return data, revision, nil
+	return parseRevisionMetadata(revisionID, object.Metadata)
 }

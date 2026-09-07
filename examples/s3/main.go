@@ -8,17 +8,18 @@ import (
 	"os"
 
 	"github.com/sundayfun/sundial"
+	yamlcodec "github.com/sundayfun/sundial/codec/yaml"
 	s3provider "github.com/sundayfun/sundial/provider/s3"
 )
 
 type config struct {
-	Server serverConfig `json:"server"`
-	Debug  bool         `json:"debug"`
+	Server serverConfig `yaml:"server"`
+	Debug  bool         `yaml:"debug"`
 }
 
 type serverConfig struct {
-	Host string `json:"host"`
-	Port int    `json:"port"`
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
 }
 
 func main() {
@@ -58,7 +59,7 @@ func run() error {
 		}
 	}
 
-	store, err := sundial.New[config](ctx, provider)
+	store, err := sundial.New(ctx, provider, sundial.WithCodec[config](yamlcodec.New()))
 	if err != nil {
 		return err
 	}

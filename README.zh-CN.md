@@ -46,8 +46,8 @@ defer cancel()
 configStore, err := s3provider.New[Config](ctx, &s3provider.Config{
 	Region: "us-east-1",
 	Bucket: "my-config-bucket",
-	CurrentRevisionKey: "production/app/current",
-	RevisionKeyPrefix:  "production/app/history/",
+	CurrentRevisionKey: "production/app/metadata.yaml",
+	RevisionKeyPrefix:  "production/app/",
 })
 if err != nil {
 	log.Fatal(err)
@@ -95,11 +95,11 @@ if err != nil {
 `CurrentRevisionKey` 和 `RevisionKeyPrefix` 均由调用方显式配置：
 
 ```text
-production/app/current
-production/app/history/<revision-id>
+production/app/metadata.yaml
+production/app/<revision-id>.yaml
 ```
 
-`Put` 创建不可变版本；`ListRevisions` 和 `GetRevision` 用于读取历史；`RestoreRevision` 将历史内容复制成新的当前版本。`GetRevision` 返回的历史值与当前配置相互独立。
+`Put` 创建不可变版本；`ListRevisions` 和 `GetRevision` 用于读取历史；`RestoreRevision(ctx, targetRevisionID, currentRevisionID)` 仅在当前版本仍为 `currentRevisionID` 时，将历史内容复制成新的当前版本；传入的当前版本 ID 为空或过期时返回 `ErrConflict`。`GetRevision` 返回的历史值与当前配置相互独立。
 
 完整示例见 [S3 示例](examples/s3)。
 

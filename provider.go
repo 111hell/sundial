@@ -34,10 +34,10 @@ type Provider interface {
 	// Providers may use internal concurrency checks and return ErrConflict
 	// when concurrent writes prevent publication.
 	Put(ctx context.Context, data []byte) (Revision, error)
-	// PutIfRevision atomically replaces an existing document only when the non-empty
-	// expectedRevisionID matches the current revision ID. It returns the saved
-	// revision; a mismatch returns ErrConflict.
-	PutIfRevision(ctx context.Context, data []byte, expectedRevisionID string) (Revision, error)
+	// PutIfRevision atomically replaces an existing document if currentRevisionID,
+	// the revision observed by the caller, still matches storage. It returns the
+	// saved revision; an empty or stale ID returns ErrConflict.
+	PutIfRevision(ctx context.Context, data []byte, currentRevisionID string) (Revision, error)
 }
 
 // RevisionManager provides optional configuration history operations.
@@ -46,12 +46,6 @@ type RevisionManager interface {
 	GetRevision(ctx context.Context, revisionID string) ([]byte, Revision, error)
 	// ListRevisions returns immutable revisions in newest-first order.
 	ListRevisions(ctx context.Context, opts ListRevisionsOptions) ([]Revision, error)
-	// RestoreRevision conditionally copies a historical revision into a new current revision.
-	RestoreRevision(
-		ctx context.Context,
-		revisionID string,
-		expectedRevisionID string,
-	) ([]byte, Revision, error)
 }
 
 // Watcher detects Provider changes.

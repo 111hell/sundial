@@ -976,7 +976,7 @@ func TestRevisionOperationsReturnUnsupportedForBasicProvider(t *testing.T) {
 	if !errors.Is(err, sundial.ErrUnsupported) {
 		t.Fatalf("ListRevisions() error = %v, want ErrUnsupported", err)
 	}
-	_, err = configStore.RestoreRevision(t.Context(), "revision")
+	_, err = configStore.RestoreRevision(t.Context(), "revision", "current")
 	if !errors.Is(err, sundial.ErrUnsupported) {
 		t.Fatalf("RestoreRevision() error = %v, want ErrUnsupported", err)
 	}

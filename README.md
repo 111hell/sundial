@@ -48,8 +48,8 @@ defer cancel()
 configStore, err := s3provider.New[Config](ctx, &s3provider.Config{
 	Region: "us-east-1",
 	Bucket: "my-config-bucket",
-	CurrentRevisionKey: "production/app/current",
-	RevisionKeyPrefix:  "production/app/history/",
+	CurrentRevisionKey: "production/app/metadata.yaml",
+	RevisionKeyPrefix:  "production/app/",
 })
 if err != nil {
 	log.Fatal(err)
@@ -98,13 +98,14 @@ Storage implementations live under `provider/<source>`.
 The caller configures `CurrentRevisionKey` and `RevisionKeyPrefix` explicitly:
 
 ```text
-production/app/current
-production/app/history/<revision-id>
+production/app/metadata.yaml
+production/app/<revision-id>.yaml
 ```
 
 `Put` creates an immutable revision. `ListRevisions` and `GetRevision` read
-history. `RestoreRevision` copies a
-historical value into a new current revision. Values returned by `GetRevision`
+history. `RestoreRevision(ctx, targetRevisionID, currentRevisionID)` copies a historical value
+into a new current revision only if `currentRevisionID` is still current. An empty or
+stale caller-supplied ID returns `ErrConflict`. Values returned by `GetRevision`
 are detached from the current configuration.
 
 See the runnable [S3 example](examples/s3).

@@ -45,21 +45,25 @@ func (s *Client[T]) ListRevisions(
 	return revisions, nil
 }
 
-// RestoreRevision publishes a new revision containing a historical value.
+// RestoreRevision publishes targetRevisionID as a new revision if currentRevisionID
+// still matches storage. currentRevisionID is the revision observed by the caller;
+// an empty or stale ID returns ErrConflict.
 // It decodes the historical content before writing and preserves its original bytes.
 func (s *Client[T]) RestoreRevision(
 	ctx context.Context,
-	revisionID string,
+	targetRevisionID string,
+	currentRevisionID string,
 ) (Entry[T], error) {
 	provider, ok := s.provider.(RevisionManager)
 	if !ok {
 		return Entry[T]{}, ErrUnsupported
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	current := s.snapshot.Load()
-	data, _, err := provider.GetRevision(ctx, revisionID)
+	if currentRevisionID == "" {
+		return Entry[T]{}, fmt.Errorf("sundial: restore revision: %w", ErrConflict)
+	}
+
+	data, _, err := provider.GetRevision(ctx, targetRevisionID)
 	if err != nil {
 		return Entry[T]{}, fmt.Errorf("sundial: restore revision: %w", err)
 	}
@@ -68,7 +72,10 @@ func (s *Client[T]) RestoreRevision(
 	if err != nil {
 		return Entry[T]{}, err
 	}
-	revision, err := s.provider.PutIfRevision(ctx, next.data, current.revision.ID)
+	// Serialize publication and the snapshot update; history reads need no lock.
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	revision, err := s.provider.PutIfRevision(ctx, next.data, currentRevisionID)
 	if err != nil {
 		return Entry[T]{}, fmt.Errorf("sundial: restore revision: %w", err)
 	}

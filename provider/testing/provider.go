@@ -54,11 +54,11 @@ func (p *Provider) Put(_ context.Context, data []byte) (sundial.Revision, error)
 }
 
 // PutIfRevision replaces the current test document when
-// expectedRevisionID is current.
+// currentRevisionID is current.
 func (p *Provider) PutIfRevision(
 	_ context.Context,
 	data []byte,
-	expectedRevisionID string,
+	currentRevisionID string,
 ) (sundial.Revision, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -67,7 +67,7 @@ func (p *Provider) PutIfRevision(
 	if p.putIfRevisionErr != nil {
 		return sundial.Revision{}, p.putIfRevisionErr
 	}
-	if expectedRevisionID == "" || expectedRevisionID != p.revision.ID || !p.exists {
+	if currentRevisionID == "" || currentRevisionID != p.revision.ID || !p.exists {
 		return sundial.Revision{}, sundial.ErrConflict
 	}
 	p.store(data, true)

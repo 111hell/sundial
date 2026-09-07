@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strconv"
 	"sync"
@@ -18,11 +19,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/sundayfun/sundial"
+	yamlcodec "github.com/sundayfun/sundial/codec/yaml"
 )
 
 type storedObject struct {
-	data []byte
-	etag string
+	data     []byte
+	etag     string
+	metadata map[string]string
 }
 
 type testClient struct {
@@ -51,7 +54,9 @@ func (c *testClient) HeadObject(
 	input *awss3.HeadObjectInput,
 	_ ...func(*awss3.Options),
 ) (*awss3.HeadObjectOutput, error) {
+	c.mu.Lock()
 	c.headInput = input
+	c.mu.Unlock()
 	if c.head != nil {
 		return c.head(ctx, input)
 	}
@@ -64,7 +69,7 @@ func (c *testClient) HeadObject(
 	if !ok {
 		return nil, &smithy.GenericAPIError{Code: errorCodeNoSuchKey}
 	}
-	return &awss3.HeadObjectOutput{ETag: aws.String(object.etag)}, nil
+	return &awss3.HeadObjectOutput{ETag: aws.String(object.etag), Metadata: maps.Clone(object.metadata)}, nil
 }
 
 func (c *testClient) GetObject(
@@ -80,8 +85,9 @@ func (c *testClient) GetObject(
 		return nil, &smithy.GenericAPIError{Code: errorCodeNoSuchKey}
 	}
 	return &awss3.GetObjectOutput{
-		Body: io.NopCloser(bytes.NewReader(slices.Clone(object.data))),
-		ETag: aws.String(object.etag),
+		Body:     io.NopCloser(bytes.NewReader(slices.Clone(object.data))),
+		ETag:     aws.String(object.etag),
+		Metadata: maps.Clone(object.metadata),
 	}, nil
 }
 
@@ -110,7 +116,7 @@ func (c *testClient) PutObject(
 	}
 	c.sequence++
 	etag := fmt.Sprintf("\"etag-%d\"", c.sequence)
-	c.objects[key] = storedObject{data: slices.Clone(data), etag: etag}
+	c.objects[key] = storedObject{data: slices.Clone(data), etag: etag, metadata: maps.Clone(input.Metadata)}
 	return &awss3.PutObjectOutput{ETag: aws.String(etag)}, nil
 }
 
@@ -223,7 +229,7 @@ func TestListRevisionsLimitAndOffset(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, all[1:2], page)
 	client.mu.Lock()
-	assert.Equal(t, 3, client.getCount)
+	assert.Equal(t, 1, client.getCount, "only the current pointer needs a GET; history uses HEAD")
 	client.mu.Unlock()
 
 	empty, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{Offset: 3})
@@ -286,7 +292,7 @@ func TestProviderUsesConfiguredObjectNamesVerbatim(t *testing.T) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	assert.Contains(t, client.objects, "custom/current.pointer")
-	assert.Contains(t, client.objects, "custom/snapshot-"+currentRevision)
+	assert.Contains(t, client.objects, "custom/snapshot-"+currentRevision+".yaml")
 	assert.Len(t, client.objects, 2)
 }
 
@@ -365,53 +371,6 @@ func TestConcurrentPublishAllowsExactlyOneWriter(t *testing.T) {
 	assert.Equal(t, 1, conflicts)
 }
 
-func TestRestoreRevision(t *testing.T) {
-	t.Parallel()
-	provider := newVersionedTestProvider()
-	firstRevision, err := provider.Put(t.Context(), []byte("first"))
-	require.NoError(t, err)
-	secondRevision, err := provider.PutIfRevision(t.Context(), []byte("second"), firstRevision.ID)
-	require.NoError(t, err)
-
-	revisions, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
-	require.NoError(t, err)
-	require.Len(t, revisions, 2)
-
-	restoredData, restoredRevision, err := provider.RestoreRevision(
-		t.Context(), revisions[1].ID, secondRevision.ID,
-	)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("first"), restoredData)
-	assert.NotEqual(t, secondRevision.ID, restoredRevision.ID)
-	assert.Equal(t, secondRevision.ID, restoredRevision.ParentID)
-
-	revisions, err = provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
-	require.NoError(t, err)
-	assert.Equal(t, []sundial.Revision{restoredRevision, secondRevision, firstRevision}, revisions)
-}
-
-func TestStaleRestoreReturnsConflict(t *testing.T) {
-	t.Parallel()
-	client := newTestClient()
-	provider := newProvider(client, testConfig())
-	first, err := provider.Put(t.Context(), []byte("first"))
-	require.NoError(t, err)
-	second, err := provider.PutIfRevision(t.Context(), []byte("second"), first.ID)
-	require.NoError(t, err)
-
-	revisions, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
-	require.NoError(t, err)
-	client.failNextCurrentRevisionCAS = true
-	_, _, err = provider.RestoreRevision(
-		t.Context(), revisions[1].ID, second.ID,
-	)
-	require.ErrorIs(t, err, sundial.ErrConflict)
-	data, current, err := provider.Get(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, []byte("second"), data)
-	assert.Equal(t, second, current)
-}
-
 func TestGetRevisionRejectsInvalidID(t *testing.T) {
 	t.Parallel()
 	provider := newVersionedTestProvider()
@@ -461,6 +420,7 @@ func TestClientRevisionOperations(t *testing.T) {
 	restored, err := client.RestoreRevision(
 		t.Context(),
 		revisions[1].ID,
+		revisions[0].ID,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, 8080, restored.Value.Port)
@@ -491,7 +451,7 @@ func TestClientRestoreRejectsUndecodableHistoryBeforeWriting(t *testing.T) {
 			writes := storage.sequence
 			storage.mu.Unlock()
 
-			_, err = client.RestoreRevision(t.Context(), old.ID)
+			_, err = client.RestoreRevision(t.Context(), old.ID, good.ID)
 			require.Error(t, err)
 			data, revision, err := provider.Get(t.Context())
 			require.NoError(t, err)
@@ -520,7 +480,7 @@ func TestClientRestoreConflictPreservesSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	storage.failNextCurrentRevisionCAS = true
 
-	_, err = client.RestoreRevision(t.Context(), old.ID)
+	_, err = client.RestoreRevision(t.Context(), old.ID, good.ID)
 	require.ErrorIs(t, err, sundial.ErrConflict)
 	_, revision, err := provider.Get(t.Context())
 	require.NoError(t, err)
@@ -540,4 +500,135 @@ func testConfig() *Config {
 		Bucket: "configs", CurrentRevisionKey: "service/production/current",
 		RevisionKeyPrefix: "service/production/history/", WatchInterval: time.Hour,
 	}
+}
+
+func TestYAMLStorageLayoutAndServiceIsolation(t *testing.T) {
+	t.Parallel()
+	storage := newTestClient()
+	im := newProvider(storage, &Config{
+		Bucket: "configs", CurrentRevisionKey: "production/im/metadata.yaml",
+		RevisionKeyPrefix: "production/im/", WatchInterval: time.Hour,
+	})
+	feed := newProvider(storage, &Config{
+		Bucket: "configs", CurrentRevisionKey: "production/feed/metadata.yaml",
+		RevisionKeyPrefix: "production/feed/", WatchInterval: time.Hour,
+	})
+	original := []byte("# keep this comment\nserver:\n  port: 8080\n")
+	first, err := im.Put(t.Context(), original)
+	require.NoError(t, err)
+	feedRevision, err := feed.Put(t.Context(), []byte("enabled: true\n"))
+	require.NoError(t, err)
+	second, err := im.PutIfRevision(t.Context(), []byte("server:\n  port: 9090\n"), first.ID)
+	require.NoError(t, err)
+	store, err := sundial.New[map[string]any](t.Context(), im, sundial.WithCodec[map[string]any](yamlcodec.New()))
+	require.NoError(t, err)
+	restoredEntry, err := store.RestoreRevision(t.Context(), first.ID, second.ID)
+	require.NoError(t, err)
+	restored, third, err := im.Get(t.Context())
+	assert.Equal(t, restoredEntry.Revision, third)
+	require.NoError(t, err)
+	assert.Equal(t, original, restored)
+	assert.Equal(t, second.ID, third.ParentID)
+	_, gotFeed, err := feed.Get(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, feedRevision, gotFeed)
+
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	assert.Len(t, storage.objects, 6)
+	assert.Equal(t, "current_revision_id: "+third.ID+"\n", string(storage.objects[im.currentRevisionKey].data))
+	for _, revision := range []sundial.Revision{first, third} {
+		key := "production/im/" + revision.ID + ".yaml"
+		object, exists := storage.objects[key]
+		require.True(t, exists)
+		assert.Equal(t, original, object.data)
+		assert.Equal(t, revision.ParentID, object.metadata[parentIDMetadataKey])
+	}
+}
+
+func TestGetRevisionRejectsInvalidParentMetadata(t *testing.T) {
+	t.Parallel()
+	for _, parent := range []string{"invalid", "self"} {
+		t.Run(parent, func(t *testing.T) {
+			t.Parallel()
+			storage := newTestClient()
+			provider := newProvider(storage, testConfig())
+			revision, err := provider.Put(t.Context(), []byte("port: 8080\n"))
+			require.NoError(t, err)
+			if parent == "self" {
+				parent = revision.ID
+			}
+			storage.mu.Lock()
+			storage.objects[provider.revisionKey(revision.ID)].metadata[parentIDMetadataKey] = parent
+			storage.mu.Unlock()
+			_, _, err = provider.GetRevision(t.Context(), revision.ID)
+			require.ErrorIs(t, err, sundial.ErrInvalidRevision)
+		})
+	}
+}
+
+func TestClientRestoresOriginalYAML(t *testing.T) {
+	t.Parallel()
+	provider := newVersionedTestProvider()
+	original := []byte("# preserve formatting and unknown fields\nport: 8080\nunknown: keep\n")
+	first, err := provider.Put(t.Context(), original)
+	require.NoError(t, err)
+	client, err := sundial.New[typedConfig](t.Context(), provider, sundial.WithCodec[typedConfig](yamlcodec.New()))
+	require.NoError(t, err)
+	entry, err := client.Get()
+	require.NoError(t, err)
+	entry.Value.Port = 9090
+	second, err := client.Put(t.Context(), entry)
+	require.NoError(t, err)
+	restored, err := client.RestoreRevision(t.Context(), first.ID, second.Revision.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 8080, restored.Value.Port)
+	assert.Equal(t, second.Revision.ID, restored.Revision.ParentID)
+	data, _, err := provider.Get(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, original, data)
+}
+
+func TestRevisionIDValidation(t *testing.T) {
+	t.Parallel()
+	for _, id := range []string{
+		"../../metadata.yaml", "01ARZ3NDEKTSV4RRFFQ69G5FAI",
+	} {
+		t.Run(id, func(t *testing.T) {
+			t.Parallel()
+			storage := newTestClient()
+			provider := newProvider(storage, testConfig())
+			_, _, err := provider.GetRevision(t.Context(), id)
+			require.ErrorIs(t, err, sundial.ErrInvalidRevision)
+		})
+	}
+}
+
+func TestSameContentCreatesDistinctRevisions(t *testing.T) {
+	t.Parallel()
+	provider := newVersionedTestProvider()
+	data := []byte("port: 8080\n")
+	first, err := provider.Put(t.Context(), data)
+	require.NoError(t, err)
+	second, err := provider.PutIfRevision(t.Context(), data, first.ID)
+	require.NoError(t, err)
+	store, err := sundial.New[typedConfig](t.Context(), provider, sundial.WithCodec[typedConfig](yamlcodec.New()))
+	require.NoError(t, err)
+	restored, err := store.RestoreRevision(t.Context(), first.ID, second.ID)
+	third := restored.Revision
+	require.NoError(t, err)
+	assert.NotEqual(t, first.ID, second.ID)
+	assert.NotEqual(t, first.ID, third.ID)
+	assert.NotEqual(t, second.ID, third.ID)
+	for _, revision := range []sundial.Revision{first, second, third} {
+		assert.Regexp(t, `^[0-9A-HJKMNP-TV-Z]{26}$`, revision.ID)
+		_, loaded, getErr := provider.GetRevision(t.Context(), revision.ID)
+		require.NoError(t, getErr)
+		assert.Equal(t, revision, loaded)
+	}
+	_, err = provider.PutIfRevision(t.Context(), data, first.ID)
+	require.ErrorIs(t, err, sundial.ErrConflict)
+	history, err := provider.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, []sundial.Revision{third, second, first}, history)
 }

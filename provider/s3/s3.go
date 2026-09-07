@@ -4,11 +4,9 @@ package s3
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,6 +15,7 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/oklog/ulid/v2"
 	"github.com/sundayfun/sundial"
+	"go.yaml.in/yaml/v3"
 )
 
 // Config identifies one versioned configuration document in S3.
@@ -25,9 +24,9 @@ type Config struct {
 	Region string
 	// Bucket contains the versioned configuration objects.
 	Bucket string
-	// CurrentRevisionKey identifies the object containing the current revision ID.
+	// CurrentRevisionKey identifies the YAML metadata object containing current_revision_id.
 	CurrentRevisionKey string
-	// RevisionKeyPrefix is prepended verbatim to immutable revision IDs.
+	// RevisionKeyPrefix is prepended verbatim to <revision-id>.yaml.
 	RevisionKeyPrefix string
 	// Endpoint optionally overrides the standard AWS S3 endpoint.
 	Endpoint string
@@ -52,11 +51,11 @@ type Provider struct {
 	watchInterval      time.Duration
 }
 
-type storedRevision struct {
-	ID       string `json:"id"`
-	ParentID string `json:"parent_id,omitempty"`
-	Content  []byte `json:"content"`
+type currentMetadata struct {
+	RevisionID string `yaml:"current_revision_id"`
 }
+
+const parentIDMetadataKey = "parent-id"
 
 var (
 	_ sundial.Provider        = (*Provider)(nil)
@@ -156,68 +155,66 @@ func (p *Provider) Put(ctx context.Context, data []byte) (sundial.Revision, erro
 	return p.publish(ctx, data, currentRevision, etag)
 }
 
-// PutIfRevision publishes data only when expectedRevisionID is current.
+// PutIfRevision publishes data only when currentRevisionID is current.
 func (p *Provider) PutIfRevision(
 	ctx context.Context,
 	data []byte,
-	expectedRevisionID string,
+	currentRevisionID string,
 ) (sundial.Revision, error) {
-	if expectedRevisionID == "" {
+	if currentRevisionID == "" {
 		return sundial.Revision{}, fmt.Errorf("s3: publish revision: %w", sundial.ErrConflict)
 	}
-	currentRevision, etag, err := p.getCurrentRevision(ctx)
+	storedRevisionID, etag, err := p.getCurrentRevision(ctx)
 	if err != nil {
 		if errors.Is(err, sundial.ErrNotFound) {
 			return sundial.Revision{}, fmt.Errorf("s3: publish revision: %w", sundial.ErrConflict)
 		}
 		return sundial.Revision{}, err
 	}
-	if currentRevision != expectedRevisionID {
+	if storedRevisionID != currentRevisionID {
 		return sundial.Revision{}, fmt.Errorf("s3: publish revision: %w", sundial.ErrConflict)
 	}
-	return p.publish(ctx, data, currentRevision, etag)
+	return p.publish(ctx, data, storedRevisionID, etag)
 }
 
 func (p *Provider) publish(
 	ctx context.Context,
 	data []byte,
 	parentID string,
-	expectedETag string,
+	currentETag string,
 ) (sundial.Revision, error) {
-	rev, revision := buildRevision(data, parentID)
-	if err := p.putRevision(ctx, &rev); err != nil {
-		return sundial.Revision{}, err
-	}
-	if err := p.putCurrentRevision(ctx, rev.ID, expectedETag); err != nil {
-		return sundial.Revision{}, err
-	}
-	return revision, nil
-}
-
-func buildRevision(
-	data []byte,
-	parentID string,
-) (storedRevision, sundial.Revision) {
-	createdAt := time.Now().UTC()
-	revisionID := ulid.MustNew(ulid.Timestamp(createdAt), ulid.DefaultEntropy())
+	revisionID := ulid.Make()
 	revision := sundial.Revision{
 		ID:        revisionID.String(),
 		ParentID:  parentID,
 		CreatedAt: ulid.Time(revisionID.Time()).UTC(),
 	}
-	return storedRevision{
-		ID:       revision.ID,
-		ParentID: parentID,
-		Content:  slices.Clone(data),
-	}, revision
+	// Save the revision before updating the current pointer.
+	if err := p.putRevision(ctx, data, revision); err != nil {
+		return sundial.Revision{}, err
+	}
+	if err := p.putCurrentRevision(ctx, revision.ID, currentETag); err != nil {
+		return sundial.Revision{}, err
+	}
+	return revision, nil
 }
 
 func (p *Provider) getCurrentRevision(ctx context.Context) (string, string, error) {
-	data, etag, err := p.getObject(ctx, p.currentRevisionKey)
+	object, err := p.getObject(ctx, p.currentRevisionKey)
 	if err != nil {
 		return "", "", fmt.Errorf("s3: get current revision: %w", err)
 	}
-	currentRevision := string(data)
+	defer object.Body.Close()
+	etag := aws.ToString(object.ETag)
+	if etag == "" {
+		return "", "", ErrEmptyETag
+	}
+	var metadata currentMetadata
+	// Read the current revision ID from the response body.
+	if err := yaml.NewDecoder(object.Body).Decode(&metadata); err != nil {
+		return "", "", fmt.Errorf("s3: decode current revision: %w: %w", sundial.ErrInvalidRevision, err)
+	}
+	currentRevision := metadata.RevisionID
 	if _, parseErr := ulid.ParseStrict(currentRevision); parseErr != nil {
 		return "", "", fmt.Errorf(
 			"s3: decode current revision: %w: %w",
@@ -231,19 +228,23 @@ func (p *Provider) getCurrentRevision(ctx context.Context) (string, string, erro
 func (p *Provider) putCurrentRevision(
 	ctx context.Context,
 	currentRevision string,
-	expectedETag string,
+	currentETag string,
 ) error {
+	data, err := yaml.Marshal(currentMetadata{RevisionID: currentRevision})
+	if err != nil {
+		return fmt.Errorf("s3: encode current revision: %w", err)
+	}
 	input := &awss3.PutObjectInput{
 		Bucket: &p.bucket,
 		Key:    &p.currentRevisionKey,
-		Body:   bytes.NewReader([]byte(currentRevision)),
+		Body:   bytes.NewReader(data),
 	}
-	if expectedETag == "" {
+	if currentETag == "" {
 		input.IfNoneMatch = aws.String("*")
 	} else {
-		input.IfMatch = &expectedETag
+		input.IfMatch = &currentETag
 	}
-	_, err := p.client.PutObject(ctx, input)
+	_, err = p.client.PutObject(ctx, input)
 	if err != nil {
 		if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 			switch apiErr.ErrorCode() {
@@ -257,16 +258,15 @@ func (p *Provider) putCurrentRevision(
 	return nil
 }
 
-func (p *Provider) putRevision(ctx context.Context, rev *storedRevision) error {
-	data, err := json.Marshal(rev)
-	if err != nil {
-		return fmt.Errorf("s3: encode revision: %w", err)
-	}
-	key := p.revisionKey(rev.ID)
-	_, err = p.client.PutObject(ctx, &awss3.PutObjectInput{
-		Bucket:      &p.bucket,
-		Key:         &key,
-		Body:        bytes.NewReader(data),
+func (p *Provider) putRevision(ctx context.Context, data []byte, revision sundial.Revision) error {
+	key := p.revisionKey(revision.ID)
+	_, err := p.client.PutObject(ctx, &awss3.PutObjectInput{
+		Bucket: &p.bucket,
+		Key:    &key,
+		Body:   bytes.NewReader(data),
+		Metadata: map[string]string{
+			parentIDMetadataKey: revision.ParentID,
+		},
 		IfNoneMatch: aws.String("*"),
 	})
 	if err != nil {
@@ -289,57 +289,58 @@ func (p *Provider) getContentByRevisionID(
 	if revisionID == "" {
 		return nil, sundial.Revision{}, sundial.ErrNotFound
 	}
-	parsedID, err := ulid.ParseStrict(revisionID)
+	_, err := ulid.ParseStrict(revisionID)
 	if err != nil {
 		return nil, sundial.Revision{}, fmt.Errorf(
 			"s3: validate revision ID: %w",
 			sundial.ErrInvalidRevision,
 		)
 	}
-	data, _, err := p.getObject(ctx, p.revisionKey(revisionID))
+	object, err := p.getObject(ctx, p.revisionKey(revisionID))
 	if err != nil {
 		return nil, sundial.Revision{}, fmt.Errorf("s3: get revision: %w", err)
 	}
-	var rev storedRevision
-	if err := json.Unmarshal(data, &rev); err != nil {
-		return nil, sundial.Revision{}, fmt.Errorf(
-			"s3: decode revision: %w: %w",
-			sundial.ErrInvalidRevision,
-			err,
-		)
+	defer object.Body.Close()
+	// Read the full revision content.
+	data, err := io.ReadAll(object.Body)
+	if err != nil {
+		return nil, sundial.Revision{}, fmt.Errorf("s3: read revision: %w", err)
 	}
-	if rev.ID != revisionID {
-		return nil, sundial.Revision{}, fmt.Errorf("s3: verify revision: %w", sundial.ErrInvalidRevision)
+	revision, err := parseRevisionMetadata(revisionID, object.Metadata)
+	if err != nil {
+		return nil, sundial.Revision{}, err
 	}
-	return rev.Content, sundial.Revision{
-		ID:        rev.ID,
-		ParentID:  rev.ParentID,
-		CreatedAt: ulid.Time(parsedID.Time()).UTC(),
-	}, nil
+	return data, revision, nil
 }
 
-func (p *Provider) getObject(ctx context.Context, key string) ([]byte, string, error) {
-	output, err := p.client.GetObject(ctx, &awss3.GetObjectInput{Bucket: &p.bucket, Key: &key})
+func parseRevisionMetadata(revisionID string, metadata map[string]string) (sundial.Revision, error) {
+	parsedID, err := ulid.ParseStrict(revisionID)
+	if err != nil {
+		return sundial.Revision{}, fmt.Errorf("s3: validate revision ID: %w", sundial.ErrInvalidRevision)
+	}
+	parentID := metadata[parentIDMetadataKey]
+	if parentID != "" {
+		if _, err := ulid.ParseStrict(parentID); err != nil || parentID == revisionID {
+			return sundial.Revision{}, fmt.Errorf("s3: verify parent revision: %w", sundial.ErrInvalidRevision)
+		}
+	}
+	return sundial.Revision{ID: revisionID, ParentID: parentID, CreatedAt: ulid.Time(parsedID.Time()).UTC()}, nil
+}
+
+func (p *Provider) getObject(ctx context.Context, key string) (*awss3.GetObjectOutput, error) {
+	object, err := p.client.GetObject(ctx, &awss3.GetObjectInput{Bucket: &p.bucket, Key: &key})
 	if err != nil {
 		if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 			switch apiErr.ErrorCode() {
 			case errorCodeNoSuchKey, errorCodeNotFound:
-				return nil, "", fmt.Errorf("s3: get object: %w: %w", sundial.ErrNotFound, err)
+				return nil, fmt.Errorf("s3: get object: %w: %w", sundial.ErrNotFound, err)
 			}
 		}
-		return nil, "", fmt.Errorf("s3: get object: %w", err)
+		return nil, fmt.Errorf("s3: get object: %w", err)
 	}
-	defer output.Body.Close()
-	data, err := io.ReadAll(output.Body)
-	if err != nil {
-		return nil, "", fmt.Errorf("s3: read object: %w", err)
-	}
-	if output.ETag == nil || *output.ETag == "" {
-		return nil, "", ErrEmptyETag
-	}
-	return data, *output.ETag, nil
+	return object, nil
 }
 
 func (p *Provider) revisionKey(revisionID string) string {
-	return p.revisionKeyPrefix + revisionID
+	return p.revisionKeyPrefix + revisionID + ".yaml"
 }

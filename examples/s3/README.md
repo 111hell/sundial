@@ -8,10 +8,10 @@ chain:
 ```sh
 export AWS_REGION=us-east-1
 export SUNDIAL_S3_BUCKET=my-config-bucket
-export SUNDIAL_S3_CURRENT_REVISION_KEY=production/app/current
-export SUNDIAL_S3_REVISION_KEY_PREFIX=production/app/history/
+export SUNDIAL_S3_CURRENT_REVISION_KEY=production/app/metadata.yaml
+export SUNDIAL_S3_REVISION_KEY_PREFIX=production/app/
 
-go run ./examples/s3 -init ./examples/s3/config.json
+go run ./examples/s3 -init ./examples/s3/config.yaml
 ```
 
 `-init` publishes the file before loading it. It is only needed when creating
@@ -25,3 +25,8 @@ go run ./examples/s3 -port 9090
 
 The update is conditional: it fails with a conflict if another writer publishes
 a revision after this process loads the configuration.
+
+The example uses the YAML codec. `metadata.yaml` contains `current_revision_id`;
+`<revision-id>.yaml` stores the original business configuration.
+Revision IDs use ULID. S3 user metadata uses `parent-id` to link each revision
+to its parent.

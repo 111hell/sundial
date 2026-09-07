@@ -40,13 +40,15 @@ func TestIntegrationS3RevisionHistory(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, revisions, 2)
 
-	restored, _, err := provider.RestoreRevision(
+	store, err := sundial.New[map[string]int](ctx, provider)
+	require.NoError(t, err)
+	restored, err := store.RestoreRevision(
 		ctx,
 		revisions[1].ID,
 		second.ID,
 	)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"port":8080}`, string(restored))
+	assert.Equal(t, 8080, restored.Value["port"])
 }
 
 func TestIntegrationS3ConcurrentPublish(t *testing.T) {
