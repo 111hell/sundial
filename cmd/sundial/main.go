@@ -35,8 +35,6 @@ func run() error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), cli.Timeout)
-	defer cancel()
-	command.BindTo(ctx, (*context.Context)(nil))
+	command.BindTo(context.Background(), (*context.Context)(nil))
 	return command.Run()
 }
