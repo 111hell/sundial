@@ -5,7 +5,8 @@ import (
 	"errors"
 )
 
-// Reload replaces the in-memory state when the Provider content changed.
+// Reload updates the in-memory content and revision from the Provider.
+// On error, the previous snapshot is preserved.
 func (s *Client[T]) Reload(ctx context.Context) error {
 	_, changed, err := s.reload(ctx)
 	if err != nil {

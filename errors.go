@@ -5,7 +5,7 @@ import "errors"
 var (
 	// ErrNotFound reports a missing configuration document.
 	ErrNotFound = errors.New("sundial: not found")
-	// ErrConflict reports that a write was based on a stale configuration revision.
+	// ErrConflict reports a failed write condition, including an empty or stale revision ID.
 	ErrConflict = errors.New("sundial: conflict")
 	// ErrEmptyDocument reports an empty configuration document.
 	ErrEmptyDocument = errors.New("sundial: empty configuration document")
@@ -20,7 +20,7 @@ func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)
 }
 
-// IsConflict reports whether err indicates a stale configuration revision.
+// IsConflict reports whether err indicates a failed write condition.
 func IsConflict(err error) bool {
 	return errors.Is(err, ErrConflict)
 }

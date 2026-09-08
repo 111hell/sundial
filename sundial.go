@@ -28,7 +28,7 @@ type Entry[T any] struct {
 	Revision Revision
 }
 
-// New loads the configuration and reloads it until ctx is canceled.
+// New loads an existing configuration and reloads it until ctx is canceled.
 func New[T any](ctx context.Context, provider Provider, opts ...Option[T]) (*Client[T], error) {
 	normalized := normalizeOptions(opts)
 	s := &Client[T]{
@@ -66,7 +66,7 @@ func (s *Client[T]) Get() (Entry[T], error) {
 
 // Put saves entry when its revision ID is current, then updates memory.
 // It returns the codec-decoded saved Entry with its new revision. A stale
-// revision ID returns ErrConflict.
+// or empty revision ID returns ErrConflict.
 func (s *Client[T]) Put(ctx context.Context, entry Entry[T]) (Entry[T], error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
