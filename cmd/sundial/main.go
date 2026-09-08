@@ -36,5 +36,8 @@ func run() error {
 	}
 
 	command.BindTo(context.Background(), (*context.Context)(nil))
+	if err := command.BindToProvider(cli.S3.ProvideProvider); err != nil {
+		return err
+	}
 	return command.Run()
 }
