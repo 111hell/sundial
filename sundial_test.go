@@ -59,9 +59,9 @@ type cancellationWatcher struct {
 	stopped chan struct{}
 }
 
-func (p *reloadErrorWatcher) Get(ctx context.Context) ([]byte, sundial.Metadata, error) {
+func (p *reloadErrorWatcher) Get(ctx context.Context) ([]byte, sundial.Revision, error) {
 	if p.failGet.Load() {
-		return nil, sundial.Metadata{}, p.reloadErr
+		return nil, sundial.Revision{}, p.reloadErr
 	}
 	return p.Provider.Get(ctx)
 }
@@ -405,8 +405,8 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 	if putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
 	}
-	if savedEntry.Metadata.Revision == entry.Metadata.Revision {
-		t.Fatalf("Put() revision = %q, want a new revision", savedEntry.Metadata.Revision)
+	if savedEntry.Revision.ID == entry.Revision.ID {
+		t.Fatalf("Put() revision ID = %q, want a new revision ID", savedEntry.Revision.ID)
 	}
 	currentEntry, getErr := configStore.Get()
 	if getErr != nil {
@@ -653,8 +653,8 @@ func TestAutomaticNativeWatcherReloadsExternalChanges(t *testing.T) {
 		if !entry.Value.Enabled {
 			t.Fatal("OnChange() Enabled = false, want true")
 		}
-		if entry.Metadata.Revision != "2" {
-			t.Fatalf("OnChange() revision = %q, want 2", entry.Metadata.Revision)
+		if entry.Revision.ID != "2" {
+			t.Fatalf("OnChange() revision ID = %q, want 2", entry.Revision.ID)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("native watcher did not report external change")
@@ -864,7 +864,7 @@ func TestPutRejectsStaleRevisionAcrossInstancesAndAllowsRetry(t *testing.T) {
 	}
 }
 
-func TestPutRejectsEntryWithoutRevision(t *testing.T) {
+func TestPutRejectsEntryWithoutRevisionID(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"counter":0}`))
@@ -884,7 +884,7 @@ func TestPutRejectsEntryWithoutRevision(t *testing.T) {
 	}
 }
 
-func TestReloadTracksChangedProviderRevisionWhenContentIsUnchanged(t *testing.T) {
+func TestReloadTracksChangedRevisionIDWhenContentIsUnchanged(t *testing.T) {
 	t.Parallel()
 
 	data := []byte(`{"enabled":true}`)
@@ -957,4 +957,27 @@ func TestConcurrentReadsAndWrites(t *testing.T) {
 		}()
 	}
 	group.Wait()
+}
+
+func TestRevisionOperationsReturnUnsupportedForBasicProvider(t *testing.T) {
+	t.Parallel()
+	configStore, err := sundial.New[testConfig](
+		t.Context(),
+		providertesting.New([]byte(`{"enabled":true}`)),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	_, _, err = configStore.GetRevision(t.Context(), "revision")
+	if !errors.Is(err, sundial.ErrUnsupported) {
+		t.Fatalf("GetRevision() error = %v, want ErrUnsupported", err)
+	}
+	_, err = configStore.ListRevisions(t.Context(), sundial.ListRevisionsOptions{})
+	if !errors.Is(err, sundial.ErrUnsupported) {
+		t.Fatalf("ListRevisions() error = %v, want ErrUnsupported", err)
+	}
+	_, err = configStore.RestoreRevision(t.Context(), "revision", "current")
+	if !errors.Is(err, sundial.ErrUnsupported) {
+		t.Fatalf("RestoreRevision() error = %v, want ErrUnsupported", err)
+	}
 }

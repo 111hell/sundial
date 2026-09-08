@@ -99,7 +99,7 @@ func (s *Client[T]) autoReload(ctx context.Context, opts reloadOptions[T]) error
 	}
 	if changed {
 		current := s.snapshot.Load()
-		s.logger.DebugContext(ctx, "reloaded configuration", "revision", current.metadata.Revision)
+		s.logger.DebugContext(ctx, "reloaded configuration", "revision_id", current.revision.ID)
 	}
 	return nil
 }

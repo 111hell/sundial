@@ -3,10 +3,12 @@ module github.com/sundayfun/sundial
 go 1.27.0
 
 require (
+	github.com/alecthomas/kong v1.15.0
 	github.com/aws/aws-sdk-go-v2 v1.43.8
 	github.com/aws/aws-sdk-go-v2/config v1.32.39
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.4
 	github.com/aws/smithy-go v1.28.0
+	github.com/oklog/ulid/v2 v2.1.2
 	github.com/stretchr/testify v1.11.1
 	go.yaml.in/yaml/v3 v3.0.4
 )

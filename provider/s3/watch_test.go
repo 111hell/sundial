@@ -19,10 +19,10 @@ func TestWatchNotifiesOnCreateUpdateAndDelete(t *testing.T) {
 	t.Parallel()
 
 	client, requests := newControlledHeadClient()
-	provider := newProvider(client, &Config{
-		Bucket:        "configs",
-		Key:           "app.json",
-		WatchInterval: time.Millisecond,
+	provider := newProvider(client, &StorageConfig{
+		Bucket:             "configs",
+		CurrentRevisionKey: "app.json/current",
+		WatchInterval:      time.Millisecond,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -63,8 +63,9 @@ func TestWatchNotifiesOnCreateUpdateAndDelete(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Watch() error = %v, want context.Canceled", err)
 	}
-	if client.headInput == nil || *client.headInput.Bucket != "configs" || *client.headInput.Key != "app.json" {
-		t.Fatalf("HeadObject input = %#v, want configs/app.json", client.headInput)
+	if client.headInput == nil || *client.headInput.Bucket != "configs" ||
+		*client.headInput.Key != "app.json/current" {
+		t.Fatalf("HeadObject input = %#v, want configs/app.json/current", client.headInput)
 	}
 }
 
@@ -72,9 +73,9 @@ func TestWatchReturnsHeadObjectError(t *testing.T) {
 	t.Parallel()
 
 	backendErr := &smithy.GenericAPIError{Code: "NoSuchBucket"}
-	provider := newProvider(&testClient{headErr: backendErr}, &Config{
-		Bucket: "configs",
-		Key:    "app.json",
+	provider := newProvider(&testClient{headErr: backendErr}, &StorageConfig{
+		Bucket:             "configs",
+		CurrentRevisionKey: "app.json/current",
 	})
 
 	err := provider.Watch(context.Background(), func() error {
@@ -90,10 +91,10 @@ func TestWatchRetriesAfterNotifyError(t *testing.T) {
 	t.Parallel()
 
 	client, requests := newControlledHeadClient()
-	provider := newProvider(client, &Config{
-		Bucket:        "configs",
-		Key:           "app.json",
-		WatchInterval: time.Millisecond,
+	provider := newProvider(client, &StorageConfig{
+		Bucket:             "configs",
+		CurrentRevisionKey: "app.json/current",
+		WatchInterval:      time.Millisecond,
 	})
 	wantErr := errors.New("reload failed")
 	notified := make(chan int, 4)
@@ -149,13 +150,13 @@ func TestWatchRetriesAfterNotifyError(t *testing.T) {
 func TestWatchStopsOnNotifyCancellation(t *testing.T) {
 	t.Parallel()
 
-	revision := `"revision-1"`
+	etag := `"revision-1"`
 	provider := newProvider(&testClient{
-		headOutput: &awss3.HeadObjectOutput{ETag: &revision},
-	}, &Config{
-		Bucket:        "configs",
-		Key:           "app.json",
-		WatchInterval: time.Millisecond,
+		headOutput: &awss3.HeadObjectOutput{ETag: &etag},
+	}, &StorageConfig{
+		Bucket:             "configs",
+		CurrentRevisionKey: "app.json/current",
+		WatchInterval:      time.Millisecond,
 	})
 
 	err := provider.Watch(context.Background(), func() error {

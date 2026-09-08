@@ -30,7 +30,7 @@ func WithCodec[T any](value codec.Codec) Option[T] {
 	}
 }
 
-// WithLogger configures structured debug and automatic reload error logging.
+// WithLogger configures structured diagnostic logging.
 func WithLogger[T any](logger *slog.Logger) Option[T] {
 	return func(opts *options[T]) {
 		if logger != nil {
@@ -39,7 +39,7 @@ func WithLogger[T any](logger *slog.Logger) Option[T] {
 	}
 }
 
-// WithOnChange sets the callback run after a changed configuration is published.
+// WithOnChange sets the callback run after automatic reload publishes a changed configuration.
 func WithOnChange[T any](callback func(Entry[T])) Option[T] {
 	return func(opts *options[T]) {
 		opts.Reload.OnChange = callback

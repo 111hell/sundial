@@ -5,7 +5,8 @@ import (
 	"errors"
 )
 
-// Reload replaces the in-memory state when the Provider content changed.
+// Reload updates the in-memory content and revision from the Provider.
+// On error, the previous snapshot is preserved.
 func (s *Client[T]) Reload(ctx context.Context) error {
 	_, changed, err := s.reload(ctx)
 	if err != nil {
@@ -16,7 +17,7 @@ func (s *Client[T]) Reload(ctx context.Context) error {
 	}
 	if changed {
 		current := s.snapshot.Load()
-		s.logger.DebugContext(ctx, "reloaded configuration", "revision", current.metadata.Revision)
+		s.logger.DebugContext(ctx, "reloaded configuration", "revision_id", current.revision.ID)
 	}
 	return nil
 }
@@ -31,7 +32,7 @@ func (s *Client[T]) reload(ctx context.Context) (Entry[T], bool, error) {
 	}
 	current := s.snapshot.Load()
 	if next.hash == current.hash {
-		if next.metadata.Revision != current.metadata.Revision {
+		if next.revision.ID != current.revision.ID {
 			s.snapshot.Store(next)
 		}
 		return entry, false, nil
