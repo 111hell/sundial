@@ -20,19 +20,27 @@ import (
 
 // Config identifies one versioned configuration document in S3.
 type Config struct {
+	// StorageConfig identifies the document and controls polling.
+	StorageConfig
+
 	// Region overrides the region resolved by the AWS SDK when non-empty.
 	Region string
+	// Endpoint overrides the S3 endpoint in NewProvider when non-empty.
+	Endpoint string
+	// UsePathStyle enables path-style addressing in NewProvider.
+	UsePathStyle bool
+}
+
+// StorageConfig identifies one document independently of the S3 connection settings.
+// Use it with NewProviderWithClient when the caller already owns an S3 client.
+type StorageConfig struct {
 	// Bucket contains the versioned configuration objects.
 	Bucket string
-	// CurrentRevisionKey identifies the YAML metadata object containing current_revision_id.
+	// CurrentRevisionKey identifies the YAML current-revision metadata object.
 	CurrentRevisionKey string
 	// RevisionKeyPrefix is prepended verbatim to <revision-id>.yaml.
 	RevisionKeyPrefix string
-	// Endpoint optionally overrides the standard AWS S3 endpoint.
-	Endpoint string
-	// UsePathStyle forces bucket names into request paths instead of hostnames.
-	UsePathStyle bool
-	// WatchInterval controls how often Watch checks the current revision ETag.
+	// WatchInterval controls ETag polling; zero uses 30 seconds, negative is invalid.
 	WatchInterval time.Duration
 }
 
@@ -70,33 +78,51 @@ func New[T any](ctx context.Context, cfg *Config, opts ...sundial.Option[T]) (*s
 	if err != nil {
 		return nil, err
 	}
-	return sundial.New[T](ctx, provider, opts...)
+	return sundial.New(ctx, provider, opts...)
 }
 
 // NewProvider creates an S3 Provider using the AWS SDK default configuration chain.
 func NewProvider(ctx context.Context, cfg *Config) (*Provider, error) {
-	normalized, err := normalizeConfig(cfg)
+	if cfg == nil {
+		return nil, ErrConfigRequired
+	}
+	normalized, err := normalizeStorageConfig(&cfg.StorageConfig)
 	if err != nil {
 		return nil, err
 	}
 	loadOptions := make([]func(*awsconfig.LoadOptions) error, 0, 1)
-	if normalized.Region != "" {
-		loadOptions = append(loadOptions, awsconfig.WithRegion(normalized.Region))
+	if cfg.Region != "" {
+		loadOptions = append(loadOptions, awsconfig.WithRegion(cfg.Region))
 	}
-	awsConfig, err := awsconfig.LoadDefaultConfig(ctx, loadOptions...)
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("s3: load AWS configuration: %w", err)
 	}
-	client := awss3.NewFromConfig(awsConfig, func(options *awss3.Options) {
-		if normalized.Endpoint != "" {
-			options.BaseEndpoint = &normalized.Endpoint
+	client := awss3.NewFromConfig(awsCfg, func(options *awss3.Options) {
+		if cfg.Endpoint != "" {
+			options.BaseEndpoint = &cfg.Endpoint
 		}
-		options.UsePathStyle = normalized.UsePathStyle
+		options.UsePathStyle = cfg.UsePathStyle
 	})
 	return newProvider(client, normalized), nil
 }
 
-func normalizeConfig(cfg *Config) (*Config, error) {
+// NewProviderWithClient creates a Provider using a caller-configured S3 client.
+// The client is reused without modification. The caller owns its credentials,
+// endpoint, region, transport, and checksum settings. Construction only validates
+// storage settings; it does not retrieve credentials or make network requests.
+func NewProviderWithClient(client *awss3.Client, cfg *StorageConfig) (*Provider, error) {
+	if client == nil {
+		return nil, ErrClientRequired
+	}
+	normalized, err := normalizeStorageConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newProvider(client, normalized), nil
+}
+
+func normalizeStorageConfig(cfg *StorageConfig) (*StorageConfig, error) {
 	if cfg == nil {
 		return nil, ErrConfigRequired
 	}
@@ -119,7 +145,7 @@ func normalizeConfig(cfg *Config) (*Config, error) {
 	return &normalized, nil
 }
 
-func newProvider(client s3Client, cfg *Config) *Provider {
+func newProvider(client s3Client, cfg *StorageConfig) *Provider {
 	return &Provider{
 		client:             client,
 		bucket:             cfg.Bucket,

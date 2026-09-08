@@ -19,7 +19,7 @@ func TestWatchNotifiesOnCreateUpdateAndDelete(t *testing.T) {
 	t.Parallel()
 
 	client, requests := newControlledHeadClient()
-	provider := newProvider(client, &Config{
+	provider := newProvider(client, &StorageConfig{
 		Bucket:             "configs",
 		CurrentRevisionKey: "app.json/current",
 		WatchInterval:      time.Millisecond,
@@ -73,7 +73,7 @@ func TestWatchReturnsHeadObjectError(t *testing.T) {
 	t.Parallel()
 
 	backendErr := &smithy.GenericAPIError{Code: "NoSuchBucket"}
-	provider := newProvider(&testClient{headErr: backendErr}, &Config{
+	provider := newProvider(&testClient{headErr: backendErr}, &StorageConfig{
 		Bucket:             "configs",
 		CurrentRevisionKey: "app.json/current",
 	})
@@ -91,7 +91,7 @@ func TestWatchRetriesAfterNotifyError(t *testing.T) {
 	t.Parallel()
 
 	client, requests := newControlledHeadClient()
-	provider := newProvider(client, &Config{
+	provider := newProvider(client, &StorageConfig{
 		Bucket:             "configs",
 		CurrentRevisionKey: "app.json/current",
 		WatchInterval:      time.Millisecond,
@@ -153,7 +153,7 @@ func TestWatchStopsOnNotifyCancellation(t *testing.T) {
 	etag := `"revision-1"`
 	provider := newProvider(&testClient{
 		headOutput: &awss3.HeadObjectOutput{ETag: &etag},
-	}, &Config{
+	}, &StorageConfig{
 		Bucket:             "configs",
 		CurrentRevisionKey: "app.json/current",
 		WatchInterval:      time.Millisecond,

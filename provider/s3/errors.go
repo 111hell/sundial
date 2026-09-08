@@ -10,7 +10,9 @@ const (
 )
 
 var (
-	// ErrConfigRequired reports a nil Config passed to New.
+	// ErrClientRequired reports a nil client passed to NewProviderWithClient.
+	ErrClientRequired = errors.New("sundial: s3 client is required")
+	// ErrConfigRequired reports nil configuration passed to a constructor.
 	ErrConfigRequired = errors.New("sundial: s3 config is required")
 	// ErrBucketRequired reports a missing bucket in Config.
 	ErrBucketRequired = errors.New("sundial: s3 bucket is required")

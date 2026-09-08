@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
@@ -120,15 +121,20 @@ func (c *testClient) PutObject(
 	return &awss3.PutObjectOutput{ETag: aws.String(etag)}, nil
 }
 
+//nolint:modernize // Flattened embedded fields crash exhaustruct_v5.
 func TestNewProviderCreatesAWSClientFromConfig(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test-access-key")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
 
 	provider, err := NewProvider(t.Context(), &Config{
-		Region: "us-east-1", Bucket: "configs",
-		CurrentRevisionKey: "service-a/production/current.pointer",
-		RevisionKeyPrefix:  "service-a/production/history/",
-		Endpoint:           "https://s3.example.com", UsePathStyle: true,
+		Region:       "us-east-1",
+		Endpoint:     "https://s3.example.com",
+		UsePathStyle: true,
+		StorageConfig: StorageConfig{
+			Bucket:             "configs",
+			CurrentRevisionKey: "service-a/production/current.pointer",
+			RevisionKeyPrefix:  "service-a/production/history/",
+		},
 	})
 	require.NoError(t, err)
 	client, ok := provider.client.(*awss3.Client)
@@ -141,8 +147,61 @@ func TestNewProviderCreatesAWSClientFromConfig(t *testing.T) {
 	assert.Equal(t, "service-a/production/current.pointer", provider.currentRevisionKey)
 	assert.Equal(t, "service-a/production/history/", provider.revisionKeyPrefix)
 	assert.Equal(t, defaultWatchInterval, provider.watchInterval)
+	creds, err := options.Credentials.Retrieve(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "test-access-key", creds.AccessKeyID)
 }
 
+func TestNewProviderUsesDefaultCredentials(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "ambient-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret")
+	t.Setenv("AWS_REGION", "ambient-region")
+	cfg := &Config{StorageConfig: *testConfig()}
+	provider, err := NewProvider(t.Context(), cfg)
+	require.NoError(t, err)
+	client, ok := provider.client.(*awss3.Client)
+	require.True(t, ok)
+	assert.Equal(t, "ambient-region", client.Options().Region)
+	creds, err := client.Options().Credentials.Retrieve(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "ambient-key", creds.AccessKeyID)
+}
+
+func TestNewProviderWithClient(t *testing.T) {
+	t.Parallel()
+	client := awss3.New(awss3.Options{
+		Region:                     "caller-region",
+		BaseEndpoint:               aws.String("http://localhost:9000"),
+		UsePathStyle:               true,
+		Credentials:                credentials.NewStaticCredentialsProvider("key", "secret", "token"),
+		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
+	})
+	cfg := &StorageConfig{
+		Bucket: "configs", CurrentRevisionKey: "app/current", RevisionKeyPrefix: "app/revisions/",
+	}
+	before := *cfg
+	provider, err := NewProviderWithClient(client, cfg)
+	require.NoError(t, err)
+	assert.Same(t, client, provider.client)
+	assert.Equal(t, before, *cfg)
+	assert.Equal(t, defaultWatchInterval, provider.watchInterval)
+	assert.Equal(t, "configs", provider.bucket)
+	assert.Equal(t, "app/current", provider.currentRevisionKey)
+	assert.Equal(t, "app/revisions/", provider.revisionKeyPrefix)
+	options := client.Options()
+	assert.Equal(t, "caller-region", options.Region)
+	assert.Equal(t, "http://localhost:9000", aws.ToString(options.BaseEndpoint))
+	assert.True(t, options.UsePathStyle)
+	assert.Equal(t, aws.RequestChecksumCalculationWhenRequired, options.RequestChecksumCalculation)
+	cfg.WatchInterval = time.Second
+	provider, err = NewProviderWithClient(client, cfg)
+	require.NoError(t, err)
+	assert.Equal(t, time.Second, provider.watchInterval)
+	_, err = NewProviderWithClient(nil, cfg)
+	require.ErrorIs(t, err, ErrClientRequired)
+}
+
+//nolint:modernize // Flattened embedded fields crash exhaustruct_v5.
 func TestNewValidatesConfig(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -152,23 +211,42 @@ func TestNewValidatesConfig(t *testing.T) {
 	}{
 		{name: "missing config", wantErr: ErrConfigRequired},
 		{name: "missing bucket", config: &Config{
-			CurrentRevisionKey: "app/current", RevisionKeyPrefix: "app/revisions",
+			StorageConfig: StorageConfig{
+				CurrentRevisionKey: "app/current",
+				RevisionKeyPrefix:  "app/revisions",
+			},
 		}, wantErr: ErrBucketRequired},
 		{name: "missing current revision key", config: &Config{
-			Bucket: "configs", RevisionKeyPrefix: "app/revisions",
+			StorageConfig: StorageConfig{
+				Bucket:            "configs",
+				RevisionKeyPrefix: "app/revisions",
+			},
 		}, wantErr: ErrCurrentRevisionKeyRequired},
 		{name: "missing revision key prefix", config: &Config{
-			Bucket: "configs", CurrentRevisionKey: "app/current",
+			StorageConfig: StorageConfig{
+				Bucket:             "configs",
+				CurrentRevisionKey: "app/current",
+			},
 		}, wantErr: ErrRevisionKeyPrefixRequired},
 		{name: "negative interval", config: &Config{
-			Bucket: "configs", CurrentRevisionKey: "app/current",
-			RevisionKeyPrefix: "app/revisions", WatchInterval: -time.Second,
+			StorageConfig: StorageConfig{
+				Bucket:             "configs",
+				CurrentRevisionKey: "app/current",
+				RevisionKeyPrefix:  "app/revisions",
+				WatchInterval:      -time.Second,
+			},
 		}, wantErr: ErrWatchIntervalInvalid},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := NewProvider(context.Background(), tt.config)
+			require.ErrorIs(t, err, tt.wantErr)
+			var storage *StorageConfig
+			if tt.config != nil {
+				storage = &tt.config.StorageConfig
+			}
+			_, err = NewProviderWithClient(awss3.New(awss3.Options{}), storage)
 			require.ErrorIs(t, err, tt.wantErr)
 		})
 	}
@@ -277,7 +355,7 @@ func TestListRevisionsDefaultsToBoundedHistory(t *testing.T) {
 func TestProviderUsesConfiguredObjectNamesVerbatim(t *testing.T) {
 	t.Parallel()
 	client := newTestClient()
-	provider := newProvider(client, &Config{
+	provider := newProvider(client, &StorageConfig{
 		Bucket:             "configs",
 		CurrentRevisionKey: "custom/current.pointer",
 		RevisionKeyPrefix:  "custom/snapshot-",
@@ -495,8 +573,8 @@ func newVersionedTestProvider() *Provider {
 	return newProvider(newTestClient(), testConfig())
 }
 
-func testConfig() *Config {
-	return &Config{
+func testConfig() *StorageConfig {
+	return &StorageConfig{
 		Bucket: "configs", CurrentRevisionKey: "service/production/current",
 		RevisionKeyPrefix: "service/production/history/", WatchInterval: time.Hour,
 	}
@@ -505,11 +583,11 @@ func testConfig() *Config {
 func TestYAMLStorageLayoutAndServiceIsolation(t *testing.T) {
 	t.Parallel()
 	storage := newTestClient()
-	im := newProvider(storage, &Config{
+	im := newProvider(storage, &StorageConfig{
 		Bucket: "configs", CurrentRevisionKey: "production/im/metadata.yaml",
 		RevisionKeyPrefix: "production/im/", WatchInterval: time.Hour,
 	})
-	feed := newProvider(storage, &Config{
+	feed := newProvider(storage, &StorageConfig{
 		Bucket: "configs", CurrentRevisionKey: "production/feed/metadata.yaml",
 		RevisionKeyPrefix: "production/feed/", WatchInterval: time.Hour,
 	})

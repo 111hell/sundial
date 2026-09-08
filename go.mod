@@ -3,6 +3,7 @@ module github.com/sundayfun/sundial
 go 1.27.0
 
 require (
+	github.com/alecthomas/kong v1.15.0
 	github.com/aws/aws-sdk-go-v2 v1.43.8
 	github.com/aws/aws-sdk-go-v2/config v1.32.39
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.4

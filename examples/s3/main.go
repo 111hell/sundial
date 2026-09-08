@@ -36,14 +36,17 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	provider, err := s3provider.NewProvider(ctx, &s3provider.Config{
-		Region:             os.Getenv("AWS_REGION"),
+	storage := s3provider.StorageConfig{
 		Bucket:             os.Getenv("SUNDIAL_S3_BUCKET"),
 		CurrentRevisionKey: os.Getenv("SUNDIAL_S3_CURRENT_REVISION_KEY"),
 		RevisionKeyPrefix:  os.Getenv("SUNDIAL_S3_REVISION_KEY_PREFIX"),
-		Endpoint:           "",
-		UsePathStyle:       false,
 		WatchInterval:      0,
+	}
+	provider, err := s3provider.NewProvider(ctx, &s3provider.Config{
+		Region:        "",
+		Endpoint:      "",
+		UsePathStyle:  false,
+		StorageConfig: storage,
 	})
 	if err != nil {
 		return err
