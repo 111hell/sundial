@@ -11,7 +11,7 @@ type CLI struct {
 
 // Commands contains provider-independent document operations.
 type Commands struct {
-	Get     Get     `cmd:"" help:"Read current or historical content; print its revision ID to stderr."`
+	Get     Get     `cmd:"" help:"Read current or historical content; print its revision ID to stdout."`
 	Put     Put     `cmd:"" help:"Publish a configuration document."`
 	List    List    `cmd:"" help:"List published revisions, newest first, as JSON."`
 	Restore Restore `cmd:"" help:"Publish historical content as a new revision."`

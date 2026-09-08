@@ -31,6 +31,6 @@ func (c *Get) Run(ctx context.Context, provider sundial.Provider) error {
 	if _, err = os.Stdout.Write(data); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(os.Stderr, revision.ID)
+	_, err = fmt.Fprintln(os.Stdout, revision.ID)
 	return err
 }
