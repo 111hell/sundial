@@ -3,6 +3,8 @@ package sundial_test
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/sundayfun/sundial"
 	providertesting "github.com/sundayfun/sundial/provider/testing"
@@ -18,14 +20,11 @@ func ExampleNew() {
 
 	// Use an in-memory test provider with an existing JSON document.
 	provider := providertesting.New([]byte(`{"port":8080}`))
-	client, err := sundial.New[Config](ctx, provider)
+	client, err := sundial.New[Config](ctx, provider, func(v Config) Config { return v })
 	if err != nil {
 		panic(err)
 	}
-	entry, err := client.Get()
-	if err != nil {
-		panic(err)
-	}
+	entry := client.Get()
 	fmt.Println(entry.Value.Port)
 
 	// Output: 8080
@@ -40,14 +39,11 @@ func ExampleClient_Put() {
 	defer cancel()
 
 	provider := providertesting.New([]byte(`{"port":8080}`))
-	client, err := sundial.New[Config](ctx, provider)
+	client, err := sundial.New[Config](ctx, provider, func(v Config) Config { return v })
 	if err != nil {
 		panic(err)
 	}
-	entry, err := client.Get()
-	if err != nil {
-		panic(err)
-	}
+	entry := client.Get()
 
 	// Keep the observed revision while changing the complete document's value.
 	entry.Value.Port = 9090
@@ -55,10 +51,7 @@ func ExampleClient_Put() {
 	if err != nil {
 		panic(err)
 	}
-	current, err := client.Get()
-	if err != nil {
-		panic(err)
-	}
+	current := client.Get()
 	fmt.Println(saved.Value.Port)
 	fmt.Println(saved.Revision.ID != entry.Revision.ID)
 	fmt.Println(current.Revision.ID == saved.Revision.ID)
@@ -78,14 +71,11 @@ func ExampleClient_Put_conflict() {
 	defer cancel()
 
 	provider := providertesting.New([]byte(`{"port":8080}`))
-	client, err := sundial.New[Config](ctx, provider)
+	client, err := sundial.New[Config](ctx, provider, func(v Config) Config { return v })
 	if err != nil {
 		panic(err)
 	}
-	entry, err := client.Get()
-	if err != nil {
-		panic(err)
-	}
+	entry := client.Get()
 	stale := entry
 	entry.Value.Port = 9090
 	if _, err = client.Put(ctx, entry); err != nil {
@@ -96,13 +86,34 @@ func ExampleClient_Put_conflict() {
 	stale.Value.Port = 7070
 	_, err = client.Put(ctx, stale)
 	fmt.Println(sundial.IsConflict(err))
-	current, err := client.Get()
-	if err != nil {
-		panic(err)
-	}
+	current := client.Get()
 	fmt.Println(current.Value.Port)
 
 	// Output:
 	// true
 	// 9090
+}
+
+func ExampleNew_clone() {
+	type Config struct {
+		Labels map[string]string `json:"labels"`
+		Tags   []string          `json:"tags"`
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	provider := providertesting.New([]byte(`{"labels":{"region":"east"},"tags":["api"]}`))
+	client, err := sundial.New(ctx, provider, func(value Config) Config {
+		value.Labels = maps.Clone(value.Labels)
+		value.Tags = slices.Clone(value.Tags)
+		return value
+	})
+	if err != nil {
+		panic(err)
+	}
+	entry := client.Get()
+	entry.Value.Labels["region"] = "west"
+	entry.Value.Tags[0] = "worker"
+	current := client.Get()
+	fmt.Println(current.Value.Labels["region"], current.Value.Tags[0])
+	// Output: east api
 }

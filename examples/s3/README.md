@@ -30,3 +30,7 @@ The example uses the YAML codec. `metadata.yaml` contains `current_revision_id`;
 `<revision-id>.yaml` stores the original business configuration.
 Revision IDs use ULID. S3 user metadata uses `parent-id` to link each revision
 to its parent.
+
+This example explicitly passes `func(v config) config { return v }` for `clone`
+because its configuration contains only value fields. A nil `clone` is rejected.
+If you add maps, slices or pointers, update the function to deep-copy their data.

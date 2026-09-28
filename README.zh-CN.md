@@ -10,7 +10,7 @@ Sundial 是一个轻量、可扩展、类型安全的 Go 配置 SDK，提供内�
 ## 为什么选择 Sundial
 
 - **类型安全访问**：应用直接读取自己定义的配置结构体，不再使用字符串路径和 `any`。
-- **快速读取**：`Get` 只读取内存快照。
+- **快速读取**：`Get` 复制内存中已解析的配置，无需再次解码。
 - **持久化写入**：`Put` 有条件地保存完整的强类型配置文档。
 - **版本历史**：支持查看历史版本和恢复配置。
 - **实时更新**：自动重新加载将外部变化同步到内存。
@@ -62,15 +62,12 @@ func main() {
             CurrentRevisionKey: "production/app/metadata.yaml",
             RevisionKeyPrefix:  "production/app/",
         },
-    })
+    }, func(v Config) Config { return v })
     if err != nil {
         log.Fatal(err)
     }
 
-    entry, err := store.Get()
-    if err != nil {
-        log.Fatal(err)
-    }
+    entry := store.Get()
     fmt.Println(entry.Value.Port)
 
     entry.Value.Port = 9090
@@ -79,6 +76,11 @@ func main() {
     }
 }
 ```
+
+必须显式提供非 nil 的 `clone` 函数，否则 `New` 返回 `ErrCloneRequired`。
+本例的配置只有值字段，使用 `func(v Config) Config { return v }` 即可。
+类型包含 map、slice、指针等可变引用时，需要复制所有引用的数据。
+函数必须支持并发调用，不能修改输入，也不能执行编码或解码。
 
 `Get` 返回独立的配置副本及其版本。`Put` 保存完整文档，版本过期时返回
 `ErrConflict`，不会自动合并或重试。取消 context 会停止自动加载。

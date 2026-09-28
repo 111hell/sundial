@@ -68,18 +68,18 @@ func (s *Client[T]) RestoreRevision(
 		return Entry[T]{}, fmt.Errorf("sundial: restore revision: %w", err)
 	}
 	var zeroRevision Revision
-	next, value, err := decodeSnapshot[T](s.codec, data, zeroRevision)
+	next, err := s.decodeSnapshot(data, zeroRevision)
 	if err != nil {
 		return Entry[T]{}, err
 	}
 	// Serialize publication and the snapshot update; history reads need no lock.
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	revision, err := s.provider.PutIfRevision(ctx, next.data, currentRevisionID)
+	revision, err := s.provider.PutIfRevision(ctx, data, currentRevisionID)
 	if err != nil {
 		return Entry[T]{}, fmt.Errorf("sundial: restore revision: %w", err)
 	}
 	next.revision = revision
 	s.snapshot.Store(next)
-	return Entry[T]{Value: value, Revision: revision}, nil
+	return s.entry(next), nil
 }

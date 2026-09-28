@@ -8,30 +8,28 @@ import (
 	"github.com/sundayfun/sundial/codec"
 )
 
-// snapshot is one immutable encoded configuration state published for
+// snapshot is one immutable parsed configuration state published for
 // concurrent reads. The hash tracks content and revision tracks the Provider
 // revision paired with the document.
-type snapshot struct {
-	data     []byte
+type snapshot[T any] struct {
+	value    T
 	hash     [sha256.Size]byte
 	revision Revision
 }
 
-func decodeSnapshot[T any](
-	documentCodec codec.Codec,
+func (s *Client[T]) decodeSnapshot(
 	data []byte,
 	revision Revision,
-) (*snapshot, T, error) {
-	config, err := decodeConfig[T](documentCodec, data)
+) (*snapshot[T], error) {
+	config, err := decodeConfig[T](s.codec, data)
 	if err != nil {
-		return nil, config, fmt.Errorf("sundial: decode configuration: %w", err)
+		return nil, fmt.Errorf("sundial: decode configuration: %w", err)
 	}
-
-	return &snapshot{
-		data:     cloneBytes(data),
+	return &snapshot[T]{
+		value:    s.clone(config),
 		hash:     sha256.Sum256(data),
 		revision: revision,
-	}, config, nil
+	}, nil
 }
 
 func decodeConfig[T any](documentCodec codec.Codec, data []byte) (T, error) {
@@ -45,6 +43,6 @@ func decodeConfig[T any](documentCodec codec.Codec, data []byte) (T, error) {
 	return config, nil
 }
 
-func cloneBytes(data []byte) []byte {
-	return append([]byte(nil), data...)
+func (s *Client[T]) entry(current *snapshot[T]) Entry[T] {
+	return Entry[T]{Value: s.clone(current.value), Revision: current.revision}
 }

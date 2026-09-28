@@ -6,13 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/sundayfun/sundial"
 	yamlcodec "github.com/sundayfun/sundial/codec/yaml"
 	providertesting "github.com/sundayfun/sundial/provider/testing"
@@ -112,16 +118,13 @@ func TestNewLoadsTypedConfigurationIntoMemory(t *testing.T) {
 	}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	config := entry.Value
 	if config.Server.Port != 8080 {
 		t.Fatalf("Get().Server.Port = %d, want 8080", config.Server.Port)
@@ -137,9 +140,7 @@ func TestNewLoadsTypedConfigurationIntoMemory(t *testing.T) {
 	}
 
 	for range 10 {
-		if _, getErr := configStore.Get(); getErr != nil {
-			t.Fatalf("Get() error = %v", getErr)
-		}
+		configStore.Get()
 	}
 	if got := provider.GetCount(); got != 1 {
 		t.Fatalf("memory reads called Provider.Get: count = %d", got)
@@ -151,7 +152,7 @@ func TestNewRejectsMissingConfiguration(t *testing.T) {
 
 	_, err := sundial.New[testConfig](
 		context.Background(),
-		providertesting.New(nil),
+		providertesting.New(nil), cloneTestConfig,
 	)
 	if !errors.Is(err, sundial.ErrNotFound) {
 		t.Fatalf("New() error = %v, want ErrNotFound", err)
@@ -163,7 +164,7 @@ func TestNewRejectsInvalidConfiguration(t *testing.T) {
 
 	_, err := sundial.New[testConfig](
 		context.Background(),
-		providertesting.New([]byte(`{"server":`)),
+		providertesting.New([]byte(`{"server":`)), cloneTestConfig,
 	)
 	if err == nil {
 		t.Fatal("New() error = nil, want decode failure")
@@ -206,8 +207,10 @@ func TestNewRejectsEmptyConfiguration(t *testing.T) {
 
 			_, err := sundial.New[testConfig](
 				context.Background(),
-				providertesting.New(test.data),
-				test.options...,
+				providertesting.New(
+					test.data,
+				),
+				cloneTestConfig, test.options...,
 			)
 			if !errors.Is(err, sundial.ErrEmptyDocument) {
 				t.Fatalf("New() error = %v, want ErrEmptyDocument", err)
@@ -221,7 +224,7 @@ func TestNewAcceptsEmptyObjectConfiguration(t *testing.T) {
 
 	_, err := sundial.New[testConfig](
 		t.Context(),
-		providertesting.New([]byte(`{}`)),
+		providertesting.New([]byte(`{}`)), cloneTestConfig,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v, want nil", err)
@@ -240,17 +243,14 @@ func TestWithLoggerLogsSuccessfulOperationsAndErrors(t *testing.T) {
 	provider := providertesting.New([]byte(`{"enabled":false}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 		sundial.WithLogger[testConfig](logger),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	entry.Value.Enabled = true
 	if _, putErr := configStore.Put(t.Context(), entry); putErr != nil {
 		t.Fatalf("Put() error = %v", putErr)
@@ -266,10 +266,7 @@ func TestWithLoggerLogsSuccessfulOperationsAndErrors(t *testing.T) {
 	}
 
 	provider.SetPutIfRevisionError(errors.New("backend unavailable"))
-	entry, err = configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() before failed Put error = %v", err)
-	}
+	entry = configStore.Get()
 	if _, putErr := configStore.Put(t.Context(), entry); putErr == nil {
 		t.Fatal("Put() error = nil, want failure")
 	}
@@ -300,7 +297,7 @@ func TestWithLoggerLogsInitialLoadError(t *testing.T) {
 	}))
 	_, err := sundial.New[testConfig](
 		t.Context(),
-		providertesting.New([]byte(`{"enabled":`)),
+		providertesting.New([]byte(`{"enabled":`)), cloneTestConfig,
 		sundial.WithLogger[testConfig](logger),
 	)
 	if err == nil {
@@ -320,17 +317,14 @@ func TestCustomCodec(t *testing.T) {
 	provider := providertesting.New([]byte(`custom:{"enabled":true}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 		sundial.WithCodec[testConfig](prefixedJSONCodec{prefix: []byte(prefix)}),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	config := entry.Value
 	config.Enabled = false
 	entry.Value = config
@@ -348,26 +342,20 @@ func TestYAMLCodec(t *testing.T) {
 	provider := providertesting.New([]byte("server:\n  port: 8080\n"))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 		sundial.WithCodec[testConfig](yamlcodec.New()),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	config := entry.Value
 	if config.Server.Port != 8080 {
 		t.Fatalf("Get().Server.Port = %d, want 8080", config.Server.Port)
 	}
 
-	entry, err = configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry = configStore.Get()
 	config = entry.Value
 	config.Server.Port = 9090
 	entry.Value = config
@@ -388,16 +376,13 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 	}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	config := entry.Value
 	config.Server.Port = 9090
 	entry.Value = config
@@ -408,10 +393,7 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 	if savedEntry.Revision.ID == entry.Revision.ID {
 		t.Fatalf("Put() revision ID = %q, want a new revision ID", savedEntry.Revision.ID)
 	}
-	currentEntry, getErr := configStore.Get()
-	if getErr != nil {
-		t.Fatalf("Get() after Put error = %v", getErr)
-	}
+	currentEntry := configStore.Get()
 	if !reflect.DeepEqual(savedEntry, currentEntry) {
 		t.Fatalf("Put() entry = %#v, want current Entry %#v", savedEntry, currentEntry)
 	}
@@ -429,15 +411,12 @@ func TestPutPersistsCompleteDocument(t *testing.T) {
 
 	reloaded, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 	)
 	if err != nil {
 		t.Fatalf("reload New() error = %v", err)
 	}
-	reloadedEntry, err := reloaded.Get()
-	if err != nil {
-		t.Fatalf("reload Get() error = %v", err)
-	}
+	reloadedEntry := reloaded.Get()
 	if reloadedEntry.Value.Server.Port != 9090 {
 		t.Fatalf("reloaded port = %d, want 9090", reloadedEntry.Value.Server.Port)
 	}
@@ -450,17 +429,14 @@ func TestPutRejectsEmptyEncodedConfiguration(t *testing.T) {
 		provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
 		configStore, err := sundial.New[testConfig](
 			t.Context(),
-			provider,
+			provider, cloneTestConfig,
 			sundial.WithCodec[testConfig](fixedEncodeCodec{encoded: encoded}),
 		)
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
 		}
 
-		entry, err := configStore.Get()
-		if err != nil {
-			t.Fatalf("Get() error = %v", err)
-		}
+		entry := configStore.Get()
 		entry.Value.Server.Port = 9090
 		_, putErr := configStore.Put(context.Background(), entry)
 		if !errors.Is(putErr, sundial.ErrEmptyDocument) {
@@ -469,10 +445,7 @@ func TestPutRejectsEmptyEncodedConfiguration(t *testing.T) {
 		if got := provider.PutIfRevisionCount(); got != 0 {
 			t.Fatalf("PutIfRevisionCount() = %d, want 0", got)
 		}
-		current, getErr := configStore.Get()
-		if getErr != nil {
-			t.Fatalf("Get() after failed Put error = %v", getErr)
-		}
+		current := configStore.Get()
 		if current.Value.Server.Port != 8080 {
 			t.Fatalf("port after failed Put = %d, want 8080", current.Value.Server.Port)
 		}
@@ -485,17 +458,14 @@ func TestPutFailureKeepsPreviousMemory(t *testing.T) {
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
 	provider.SetPutIfRevisionError(errors.New("put failed"))
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	config := entry.Value
 	config.Server.Port = 9090
 	entry.Value = config
@@ -503,10 +473,7 @@ func TestPutFailureKeepsPreviousMemory(t *testing.T) {
 		t.Fatal("Put() error = nil, want failure")
 	}
 
-	currentEntry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() after failed Put error = %v", err)
-	}
+	currentEntry := configStore.Get()
 	if currentEntry.Value.Server.Port != 8080 {
 		t.Fatalf("port after failed Put = %d, want 8080", currentEntry.Value.Server.Port)
 	}
@@ -518,7 +485,7 @@ func TestReloadFailureKeepsPreviousMemory(t *testing.T) {
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -528,10 +495,7 @@ func TestReloadFailureKeepsPreviousMemory(t *testing.T) {
 	if reloadErr := configStore.Reload(context.Background()); reloadErr == nil {
 		t.Fatal("Reload() error = nil, want decode failure")
 	}
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	if entry.Value.Server.Port != 8080 {
 		t.Fatalf("port after failed reload = %d, want 8080", entry.Value.Server.Port)
 	}
@@ -541,7 +505,7 @@ func TestReloadRejectsEmptyConfigurationAndKeepsPreviousMemory(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
-	configStore, err := sundial.New[testConfig](t.Context(), provider)
+	configStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -551,10 +515,7 @@ func TestReloadRejectsEmptyConfigurationAndKeepsPreviousMemory(t *testing.T) {
 	if !errors.Is(reloadErr, sundial.ErrEmptyDocument) {
 		t.Fatalf("Reload() error = %v, want ErrEmptyDocument", reloadErr)
 	}
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	if entry.Value.Server.Port != 8080 {
 		t.Fatalf("port after failed reload = %d, want 8080", entry.Value.Server.Port)
 	}
@@ -564,7 +525,7 @@ func TestReloadRejectsMissingConfiguration(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
-	configStore, err := sundial.New[testConfig](t.Context(), provider)
+	configStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -573,10 +534,7 @@ func TestReloadRejectsMissingConfiguration(t *testing.T) {
 	if reloadErr := configStore.Reload(context.Background()); !errors.Is(reloadErr, sundial.ErrNotFound) {
 		t.Fatalf("Reload() error = %v, want ErrNotFound", reloadErr)
 	}
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	if entry.Value.Server.Port != 8080 {
 		t.Fatalf("port after missing reload = %d, want 8080", entry.Value.Server.Port)
 	}
@@ -591,25 +549,19 @@ func TestGetReturnsDetachedConfiguration(t *testing.T) {
 	}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	config := entry.Value
 	config.Server.Tags[0] = "mutated"
 	config.Server.TLS.Enabled = false
 	config.Labels["region"] = "west"
 
-	currentEntry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("second Get() error = %v", err)
-	}
+	currentEntry := configStore.Get()
 	current := currentEntry.Value
 	if current.Server.Tags[0] != "api" {
 		t.Fatalf("detached tag = %q, want api", current.Server.Tags[0])
@@ -629,7 +581,7 @@ func TestAutomaticNativeWatcherReloadsExternalChanges(t *testing.T) {
 	changed := make(chan sundial.Entry[testConfig], 1)
 	_, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 		sundial.WithOnChange[testConfig](func(entry sundial.Entry[testConfig]) {
 			changed <- entry
 		}),
@@ -674,7 +626,7 @@ func TestContextCancellationStopsAutomaticReload(t *testing.T) {
 	}
 	configStore, err := sundial.New[testConfig](
 		ctx,
-		provider,
+		provider, cloneTestConfig,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -688,10 +640,7 @@ func TestContextCancellationStopsAutomaticReload(t *testing.T) {
 	}
 	provider.SetData([]byte(`{"enabled":true}`))
 
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	if entry.Value.Enabled {
 		t.Fatal("configuration changed after context cancellation")
 	}
@@ -709,7 +658,7 @@ func TestNativeWatcherReceivesReloadError(t *testing.T) {
 	reported := make(chan error, 1)
 	_, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 		sundial.WithOnError[testConfig](func(err error) {
 			reported <- err
 		}),
@@ -745,20 +694,14 @@ func TestPutRejectsStaleRevisionWithinInstance(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"counter":0,"enabled":false}`))
-	configStore, err := sundial.New[testConfig](t.Context(), provider)
+	configStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	firstEntry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("first Get() error = %v", err)
-	}
+	firstEntry := configStore.Get()
 	first := firstEntry.Value
-	staleEntry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("second Get() error = %v", err)
-	}
+	staleEntry := configStore.Get()
 	stale := staleEntry.Value
 
 	first.Counter = 1
@@ -773,10 +716,7 @@ func TestPutRejectsStaleRevisionWithinInstance(t *testing.T) {
 		t.Fatalf("stale Put() error = %v, want ErrConflict", putErr)
 	}
 
-	currentEntry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	currentEntry := configStore.Get()
 	current := currentEntry.Value
 	if current.Counter != 1 || current.Enabled {
 		t.Fatalf("configuration after conflict = %#v, want first write only", current)
@@ -809,24 +749,18 @@ func TestPutRejectsStaleRevisionAcrossInstancesAndAllowsRetry(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"counter":0,"enabled":false}`))
-	firstStore, err := sundial.New[testConfig](t.Context(), provider)
+	firstStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
 	if err != nil {
 		t.Fatalf("first New() error = %v", err)
 	}
-	secondStore, err := sundial.New[testConfig](t.Context(), provider)
+	secondStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
 	if err != nil {
 		t.Fatalf("second New() error = %v", err)
 	}
 
-	firstEntry, err := firstStore.Get()
-	if err != nil {
-		t.Fatalf("first Get() error = %v", err)
-	}
+	firstEntry := firstStore.Get()
 	first := firstEntry.Value
-	secondEntry, err := secondStore.Get()
-	if err != nil {
-		t.Fatalf("second Get() error = %v", err)
-	}
+	secondEntry := secondStore.Get()
 	second := secondEntry.Value
 
 	first.Counter = 1
@@ -844,10 +778,7 @@ func TestPutRejectsStaleRevisionAcrossInstancesAndAllowsRetry(t *testing.T) {
 	if reloadErr := secondStore.Reload(context.Background()); reloadErr != nil {
 		t.Fatalf("Reload() error = %v", reloadErr)
 	}
-	secondEntry, err = secondStore.Get()
-	if err != nil {
-		t.Fatalf("retry Get() error = %v", err)
-	}
+	secondEntry = secondStore.Get()
 	second = secondEntry.Value
 	second.Enabled = true
 	secondEntry.Value = second
@@ -868,7 +799,7 @@ func TestPutRejectsEntryWithoutRevisionID(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"counter":0}`))
-	configStore, err := sundial.New[testConfig](t.Context(), provider)
+	configStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -889,7 +820,7 @@ func TestReloadTracksChangedRevisionIDWhenContentIsUnchanged(t *testing.T) {
 
 	data := []byte(`{"enabled":true}`)
 	provider := providertesting.New(data)
-	configStore, err := sundial.New[testConfig](t.Context(), provider)
+	configStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -898,10 +829,7 @@ func TestReloadTracksChangedRevisionIDWhenContentIsUnchanged(t *testing.T) {
 	if reloadErr := configStore.Reload(context.Background()); reloadErr != nil {
 		t.Fatalf("Reload() error = %v", reloadErr)
 	}
-	entry, err := configStore.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	entry := configStore.Get()
 	config := entry.Value
 	config.Enabled = false
 	entry.Value = config
@@ -919,7 +847,7 @@ func TestConcurrentReadsAndWrites(t *testing.T) {
 	provider := providertesting.New([]byte(`{"counter":0}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
+		provider, cloneTestConfig,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -931,11 +859,7 @@ func TestConcurrentReadsAndWrites(t *testing.T) {
 		go func(value int) {
 			defer group.Done()
 			for {
-				entry, getErr := configStore.Get()
-				if getErr != nil {
-					t.Errorf("Get() error = %v", getErr)
-					return
-				}
+				entry := configStore.Get()
 				config := entry.Value
 				config.Counter = value
 				entry.Value = config
@@ -951,9 +875,7 @@ func TestConcurrentReadsAndWrites(t *testing.T) {
 		}(i)
 		go func() {
 			defer group.Done()
-			if _, getErr := configStore.Get(); getErr != nil {
-				t.Errorf("Get() error = %v", getErr)
-			}
+			configStore.Get()
 		}()
 	}
 	group.Wait()
@@ -963,7 +885,7 @@ func TestRevisionOperationsReturnUnsupportedForBasicProvider(t *testing.T) {
 	t.Parallel()
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		providertesting.New([]byte(`{"enabled":true}`)),
+		providertesting.New([]byte(`{"enabled":true}`)), cloneTestConfig,
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -980,4 +902,335 @@ func TestRevisionOperationsReturnUnsupportedForBasicProvider(t *testing.T) {
 	if !errors.Is(err, sundial.ErrUnsupported) {
 		t.Fatalf("RestoreRevision() error = %v, want ErrUnsupported", err)
 	}
+}
+
+//nolint:gocritic // The constructor requires a func(T) T, including for larger configuration structs.
+func cloneTestConfig(value testConfig) testConfig {
+	value.Labels = maps.Clone(value.Labels)
+	value.Server.Tags = slices.Clone(value.Server.Tags)
+	if value.Server.TLS != nil {
+		tls := *value.Server.TLS
+		value.Server.TLS = &tls
+	}
+	return value
+}
+
+// countingCodec makes read-path codec work observable, including accidental encoding.
+type countingCodec struct {
+	encodes      atomic.Int64
+	decodes      atomic.Int64
+	beforeDecode func([]byte)
+}
+
+func (c *countingCodec) Encode(value any) ([]byte, error) {
+	c.encodes.Add(1)
+	return json.Marshal(value)
+}
+
+func (c *countingCodec) Decode(data []byte, value any) error {
+	c.decodes.Add(1)
+	if c.beforeDecode != nil {
+		c.beforeDecode(data)
+	}
+	return json.Unmarshal(data, value)
+}
+
+func TestGetOnlyClonesAcceptedConfiguration(t *testing.T) {
+	t.Parallel()
+	provider := providertesting.New([]byte(`{"counter":1}`))
+	documentCodec := &countingCodec{}
+	store, err := sundial.New(t.Context(), provider,
+		cloneTestConfig,
+		sundial.WithCodec[testConfig](documentCodec))
+	require.NoError(t, err)
+	for range 10 {
+		require.Equal(t, 1, store.Get().Value.Counter)
+	}
+	assert.Equal(t, 1, provider.GetCount())
+	assert.EqualValues(t, 1, documentCodec.decodes.Load())
+	assert.Zero(t, documentCodec.encodes.Load())
+}
+
+func TestNewRequiresClone(t *testing.T) {
+	t.Parallel()
+	provider := providertesting.New([]byte(`{}`))
+	store, err := sundial.New[testConfig](t.Context(), provider, nil)
+	require.ErrorIs(t, err, sundial.ErrCloneRequired)
+	assert.Nil(t, store)
+	assert.Zero(t, provider.GetCount())
+}
+
+func TestPutUsesEncodedThenDecodedValue(t *testing.T) {
+	t.Parallel()
+	for _, encoded := range []string{`{"counter":"invalid"}`, `{"counter":2}`} {
+		t.Run(encoded, func(t *testing.T) {
+			t.Parallel()
+			provider := providertesting.New([]byte(`{"counter":0}`))
+			store, err := sundial.New(t.Context(), provider, cloneTestConfig,
+				sundial.WithCodec[testConfig](fixedEncodeCodec{encoded: []byte(encoded)}))
+			require.NoError(t, err)
+			before := store.Get()
+			input := store.Get()
+			input.Value.Counter = 100
+			saved, err := store.Put(t.Context(), input)
+			if encoded == `{"counter":"invalid"}` {
+				require.ErrorContains(t, err, "decode configuration")
+				assert.Zero(t, provider.PutIfRevisionCount())
+				assert.Equal(t, []byte(`{"counter":0}`), provider.Data())
+				assert.Equal(t, before, store.Get())
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, 2, saved.Value.Counter)
+			assert.Equal(t, saved, store.Get())
+			assert.Equal(t, []byte(encoded), provider.Data())
+		})
+	}
+}
+
+func TestPutValuesAreDetached(t *testing.T) {
+	t.Parallel()
+	provider := providertesting.New([]byte(`{
+		"server":{"tags":["api"],"tls":{"enabled":true}},
+		"labels":{"region":"east"}
+	}`))
+	store, err := sundial.New(t.Context(), provider,
+		cloneTestConfig)
+	require.NoError(t, err)
+	input := store.Get()
+	assert.Equal(t, "east", input.Value.Labels["region"])
+	input.Value.Server.Port = 9090
+	saved, err := store.Put(t.Context(), input)
+	require.NoError(t, err)
+	before := store.Get()
+	for _, value := range []testConfig{input.Value, saved.Value} {
+		value.Server.Tags[0] = "mutated"
+		value.Server.TLS.Enabled = false
+		value.Labels["region"] = "mutated"
+	}
+	assert.Equal(t, before, store.Get())
+	var persisted testConfig
+	require.NoError(t, json.Unmarshal(provider.Data(), &persisted))
+	assert.Equal(t, before.Value, persisted)
+}
+
+func TestConcurrentGetCopiesPreserveValueRevisionPair(t *testing.T) {
+	t.Parallel()
+	provider := providertesting.New([]byte(`{"counter":0,"labels":{"region":"east"}}`))
+	store, err := sundial.New(t.Context(), provider, cloneTestConfig)
+	require.NoError(t, err)
+	var group sync.WaitGroup
+	for range 8 {
+		group.Go(func() {
+			for range 100 {
+				entry := store.Get()
+				assert.Equal(t, strconv.Itoa(entry.Value.Counter+1), entry.Revision.ID)
+				assert.Equal(t, "east", entry.Value.Labels["region"])
+				entry.Value.Labels["region"] = "reader"
+			}
+		})
+	}
+	for i := range 100 {
+		entry := store.Get()
+		entry.Value.Counter = i + 1
+		saved, putErr := store.Put(t.Context(), entry)
+		require.NoError(t, putErr)
+		saved.Value.Labels["region"] = "writer"
+	}
+	group.Wait()
+}
+
+type retryDecodeWatcher struct {
+	*providertesting.Provider
+
+	attempts atomic.Int64
+}
+
+func (p *retryDecodeWatcher) Watch(ctx context.Context, notify func() error) error {
+	if p.attempts.Add(1) == 1 {
+		p.SetData([]byte(`{"counter":"invalid"}`))
+	}
+	if err := notify(); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestWatchRetriesDecodeFailureAndDetachesCallback(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		provider := &retryDecodeWatcher{Provider: providertesting.New([]byte(`{"counter":0}`))}
+		errorsSeen := make(chan error, 2)
+		changes := make(chan sundial.Entry[testConfig], 2)
+		store, err := sundial.New(ctx, provider,
+			cloneTestConfig,
+			sundial.WithOnError[testConfig](func(err error) { errorsSeen <- err }),
+			sundial.WithOnChange(func(entry sundial.Entry[testConfig]) {
+				entry.Value.Labels["region"] = "callback"
+				entry.Value.Server.Tags[0] = "callback"
+				entry.Value.Server.TLS.Enabled = false
+				changes <- entry
+			}))
+		require.NoError(t, err)
+		before := store.Get()
+		synctest.Wait()
+		require.Len(t, errorsSeen, 1)
+		require.ErrorContains(t, <-errorsSeen, "decode configuration")
+		assert.Empty(t, changes)
+		assert.Equal(t, before, store.Get())
+		provider.SetData([]byte(`{"counter":2,"labels":{"region":"east"},"server":{"tags":["api"],"tls":{"enabled":true}}}`))
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+		require.EqualValues(t, 2, provider.attempts.Load())
+		require.Len(t, changes, 1)
+		changed := <-changes
+		current := store.Get()
+		assert.Equal(t, changed.Revision, current.Revision)
+		assert.Equal(t, "3", current.Revision.ID)
+		assert.Equal(t, 2, current.Value.Counter)
+		assert.Equal(t, "east", current.Value.Labels["region"])
+		assert.Equal(t, []string{"api"}, current.Value.Server.Tags)
+		assert.True(t, current.Value.Server.TLS.Enabled)
+		assert.Empty(t, errorsSeen)
+	})
+}
+
+func TestOnChangeStillOnlyReportsAutomaticContentChanges(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		provider := providertesting.NewWatcher([]byte(`{"counter":0}`))
+		var changes atomic.Int64
+		store, err := sundial.New(ctx, provider,
+			cloneTestConfig,
+			sundial.WithOnChange(func(sundial.Entry[testConfig]) { changes.Add(1) }))
+		require.NoError(t, err)
+		synctest.Wait()
+		assert.Zero(t, changes.Load())
+		provider.Change([]byte(`{"counter":1}`))
+		synctest.Wait()
+		assert.EqualValues(t, 1, changes.Load())
+		stale := store.Get()
+		provider.Change([]byte(`{"counter":1}`))
+		synctest.Wait()
+		assert.EqualValues(t, 1, changes.Load())
+		assert.NotEqual(t, stale.Revision, store.Get().Revision)
+		_, err = store.Put(ctx, stale)
+		require.ErrorIs(t, err, sundial.ErrConflict)
+		_, err = store.Put(ctx, store.Get())
+		require.NoError(t, err)
+		provider.SetData([]byte(`{"counter":2}`))
+		require.NoError(t, store.Reload(ctx))
+		synctest.Wait()
+		assert.EqualValues(t, 1, changes.Load())
+		assert.Equal(t, 2, store.Get().Value.Counter)
+	})
+}
+
+func TestReloadAndPutSerializePublication(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		provider := providertesting.New([]byte(`{"counter":0}`))
+		decoding := make(chan struct{})
+		release := make(chan struct{})
+		store, err := sundial.New(ctx, provider,
+			cloneTestConfig,
+			sundial.WithCodec[testConfig](&countingCodec{beforeDecode: func(data []byte) {
+				if string(data) == `{"counter":1}` {
+					close(decoding)
+					<-release
+				}
+			}}))
+		require.NoError(t, err)
+		stale := store.Get()
+		stale.Value.Counter = 2
+		provider.SetData([]byte(`{"counter":1}`))
+		reloaded := make(chan error, 1)
+		go func() { reloaded <- store.Reload(ctx) }()
+		<-decoding
+		put := make(chan error, 1)
+		go func() {
+			_, putErr := store.Put(ctx, stale)
+			put <- putErr
+		}()
+		assert.Zero(t, provider.PutIfRevisionCount())
+		assert.Equal(t, "1", store.Get().Revision.ID)
+		close(release)
+		require.NoError(t, <-reloaded)
+		require.ErrorIs(t, <-put, sundial.ErrConflict)
+		assert.Equal(t, "2", store.Get().Revision.ID)
+		assert.Equal(t, 1, store.Get().Value.Counter)
+	})
+}
+
+func TestNewCloneCopiesValueFields(t *testing.T) {
+	t.Parallel()
+	type name string
+	type server struct {
+		Port    int  `json:"port"`
+		Enabled bool `json:"enabled"`
+	}
+	type config struct {
+		Name    name      `json:"name"`
+		Servers [2]server `json:"servers"`
+	}
+	provider := providertesting.New([]byte(`{"name":"app","servers":[{"port":8080,"enabled":true},{}]}`))
+	store, err := sundial.New[config](t.Context(), provider, func(v config) config { return v })
+	require.NoError(t, err)
+	before := store.Get()
+	entry := store.Get()
+	entry.Value.Name = "changed"
+	entry.Value.Servers[0].Port = 9090
+	assert.Equal(t, before, store.Get())
+	saved, err := store.Put(t.Context(), entry)
+	require.NoError(t, err)
+	assert.Equal(t, saved, store.Get())
+	saved.Value.Servers[0].Enabled = false
+	assert.True(t, store.Get().Value.Servers[0].Enabled)
+	assert.Equal(t, 9090, store.Get().Value.Servers[0].Port)
+}
+
+func TestNewCloneSupportsScalar(t *testing.T) {
+	t.Parallel()
+	provider := providertesting.New([]byte(`"hello"`))
+	store, err := sundial.New[string](t.Context(), provider, func(v string) string { return v })
+	require.NoError(t, err)
+	assert.Equal(t, "hello", store.Get().Value)
+}
+
+func TestNewRequiresCloneForAllTypes(t *testing.T) {
+	t.Parallel()
+	type node struct {
+		Next *node
+	}
+	requireCloneFor[string](t, "scalar")
+	requireCloneFor[struct{ Port int }](t, "value struct")
+	requireCloneFor[map[string]string](t, "map")
+	requireCloneFor[[]string](t, "slice")
+	requireCloneFor[*int](t, "pointer")
+	requireCloneFor[any](t, "interface")
+	requireCloneFor[chan int](t, "channel")
+	requireCloneFor[func()](t, "function")
+	requireCloneFor[node](t, "recursive struct")
+	requireCloneFor[struct{ hidden map[string]string }](t, "unexported field")
+	requireCloneFor[[2]struct{ Values []string }](t, "nested array")
+	requireCloneFor[struct{ Value any }](t, "interface field")
+}
+
+func requireCloneFor[T any](t *testing.T, name string) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) {
+		t.Parallel()
+		provider := providertesting.New([]byte(`null`))
+		store, err := sundial.New[T](t.Context(), provider, nil)
+		require.ErrorIs(t, err, sundial.ErrCloneRequired)
+		assert.Nil(t, store)
+		assert.Zero(t, provider.GetCount())
+	})
 }

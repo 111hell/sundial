@@ -10,7 +10,7 @@ in-memory reads, persistent writes, and live updates.
 ## Why Sundial
 
 - **Type-safe access** — applications read their own configuration struct instead of string paths and `any` values.
-- **Fast reads** — `Get` reads only from an in-memory snapshot.
+- **Fast reads** — `Get` copies an already parsed in-memory value without decoding.
 - **Persistent writes** — `Put` conditionally saves one complete typed configuration document.
 - **Version history** — browse historical revisions and restore configuration.
 - **Live updates** — automatic reload keeps memory synchronized with external changes.
@@ -63,15 +63,12 @@ func main() {
             CurrentRevisionKey: "production/app/metadata.yaml",
             RevisionKeyPrefix:  "production/app/",
         },
-    })
+    }, func(v Config) Config { return v })
     if err != nil {
         log.Fatal(err)
     }
 
-    entry, err := store.Get()
-    if err != nil {
-        log.Fatal(err)
-    }
+    entry := store.Get()
     fmt.Println(entry.Value.Port)
 
     entry.Value.Port = 9090
@@ -80,6 +77,12 @@ func main() {
     }
 }
 ```
+
+Always provide a non-nil `clone` function; otherwise `New` returns `ErrCloneRequired`.
+For configurations containing only value fields, use `func(v Config) Config { return v }`,
+as above. For maps, slices, pointers or other mutable references, copy all referenced data.
+The function must be safe for concurrent calls, must not change its input, and must not
+encode or decode.
 
 `Get` returns an independent copy with its revision. `Put` saves the complete document;
 a stale revision returns `ErrConflict`, without automatic merging or retries.
