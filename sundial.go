@@ -14,6 +14,7 @@ import (
 type Client[T any] struct {
 	provider Provider
 	codec    codec.Codec
+	clone    func(T) T
 	logger   *slog.Logger
 
 	writeMu  sync.Mutex
@@ -22,7 +23,7 @@ type Client[T any] struct {
 
 // Entry pairs a configuration value with its revision.
 type Entry[T any] struct {
-	// Value is shared and read-only when returned by Get, Update, Put,
+	// Value is shared and read-only when returned by Get, Update,
 	// RestoreRevision or OnChange. Draft returns an independently editable value.
 	Value T
 	// Revision describes the immutable revision paired with Value.
@@ -30,12 +31,16 @@ type Entry[T any] struct {
 }
 
 // New loads an existing configuration and reloads it until ctx is canceled.
-// Get returns shared read-only values; use Update or Draft to prepare changes.
-func New[T any](ctx context.Context, provider Provider, opts ...Option[T]) (*Client[T], error) {
+// Get returns shared read-only values; use Update to publish changes.
+// A nil clone uses the Codec to encode and decode the current value for copying.
+// A supplied clone must preserve the value, leave its input unchanged, and copy all mutable
+// references. It must be safe for concurrent calls and must not retain its output.
+func New[T any](ctx context.Context, provider Provider, clone func(T) T, opts ...Option[T]) (*Client[T], error) {
 	normalized := normalizeOptions(opts)
 	s := &Client[T]{
 		provider: provider,
 		codec:    normalized.Codec,
+		clone:    clone,
 		logger:   normalized.Logger,
 		writeMu:  sync.Mutex{},
 		snapshot: atomic.Pointer[snapshot[T]]{},
@@ -60,31 +65,30 @@ func (s *Client[T]) Get() Entry[T] {
 	return s.entry(s.snapshot.Load())
 }
 
-// Draft decodes the cached document into an independently editable value and
-// preserves the revision of that document. It does not read from the Provider.
+// Draft copies the current snapshot into an independently editable value and
+// preserves its revision without accessing the Provider. A supplied clone is
+// used directly; otherwise encoding and decoding through the Codec may fail.
 func (s *Client[T]) Draft() (Entry[T], error) {
 	current := s.snapshot.Load()
-	value, err := decodeConfig[T](s.codec, current.data)
+	if s.clone != nil {
+		return Entry[T]{Value: s.clone(current.value), Revision: current.revision}, nil
+	}
+	data, err := s.codec.Encode(current.value)
+	if err != nil {
+		return Entry[T]{}, fmt.Errorf("sundial: encode draft: %w", err)
+	}
+	value, err := decodeConfig[T](s.codec, data)
 	if err != nil {
 		return Entry[T]{}, fmt.Errorf("sundial: decode draft: %w", err)
 	}
 	return Entry[T]{Value: value, Revision: current.revision}, nil
 }
 
-// Put saves entry when its revision ID is current, then updates memory.
-// It returns the shared read-only saved Entry with its new revision. A stale
-// or empty revision ID returns ErrConflict. Do not modify entry during the call.
-func (s *Client[T]) Put(ctx context.Context, entry Entry[T]) (Entry[T], error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	return s.put(ctx, entry)
-}
-
-// Update decodes an independent draft of the current snapshot, applies modify,
+// Update clones an independent draft of the current snapshot, applies modify,
 // and publishes it using that snapshot's revision. Local writes and reloads are
 // serialized for the entire operation; storage still enforces revision CAS.
-// If decoding, modify or publication fails, the accepted snapshot is preserved.
-// The returned Entry is shared and read-only. modify must not call Update, Put,
+// If modify, encoding, decoding or publication fails, the accepted snapshot is preserved.
+// The returned Entry is shared and read-only. modify must not call Update,
 // Reload or RestoreRevision on this Client because they acquire the same lock.
 func (s *Client[T]) Update(ctx context.Context, modify func(*T) error) (Entry[T], error) {
 	s.writeMu.Lock()
@@ -95,19 +99,15 @@ func (s *Client[T]) Update(ctx context.Context, modify func(*T) error) (Entry[T]
 		s.logger.ErrorContext(ctx, "update configuration", "error", err)
 		return Entry[T]{}, err
 	}
-	if err := modify(&draft.Value); err != nil {
-		return Entry[T]{}, err
+	if modifyErr := modify(&draft.Value); modifyErr != nil {
+		return Entry[T]{}, modifyErr
 	}
-	return s.put(ctx, draft)
-}
 
-// put requires writeMu to be held by the caller.
-func (s *Client[T]) put(ctx context.Context, entry Entry[T]) (Entry[T], error) {
-	data, err := s.codec.Encode(entry.Value)
+	data, err := s.codec.Encode(draft.Value)
 	if err != nil {
-		putErr := fmt.Errorf("sundial: encode configuration: %w", err)
-		s.logger.ErrorContext(ctx, "put configuration", "error", putErr)
-		return Entry[T]{}, putErr
+		updateErr := fmt.Errorf("sundial: encode configuration: %w", err)
+		s.logger.ErrorContext(ctx, "update configuration", "error", updateErr)
+		return Entry[T]{}, updateErr
 	}
 	var zeroRevision Revision
 	next, err := s.decodeSnapshot(
@@ -115,19 +115,19 @@ func (s *Client[T]) put(ctx context.Context, entry Entry[T]) (Entry[T], error) {
 		zeroRevision,
 	)
 	if err != nil {
-		s.logger.ErrorContext(ctx, "put configuration", "error", err)
+		s.logger.ErrorContext(ctx, "update configuration", "error", err)
 		return Entry[T]{}, err
 	}
-	revision, err := s.provider.PutIfRevision(ctx, data, entry.Revision.ID)
+	revision, err := s.provider.PutIfRevision(ctx, data, draft.Revision.ID)
 	if err != nil {
-		putErr := fmt.Errorf("sundial: put configuration: %w", err)
-		s.logger.ErrorContext(ctx, "put configuration", "error", putErr)
-		return Entry[T]{}, putErr
+		updateErr := fmt.Errorf("sundial: update configuration: %w", err)
+		s.logger.ErrorContext(ctx, "update configuration", "error", updateErr)
+		return Entry[T]{}, updateErr
 	}
 
 	next.revision = revision
 	s.snapshot.Store(next)
-	s.logger.DebugContext(ctx, "put configuration", "revision_id", revision.ID)
+	s.logger.DebugContext(ctx, "update configuration", "revision_id", revision.ID)
 	return s.entry(next), nil
 }
 

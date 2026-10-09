@@ -63,6 +63,7 @@ func run() error {
 	}
 
 	store, err := sundial.New(ctx, provider,
+		func(value config) config { return value },
 		sundial.WithCodec[config](yamlcodec.New()))
 	if err != nil {
 		return err
