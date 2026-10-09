@@ -10,7 +10,7 @@ Sundial 是一个轻量、可扩展、类型安全的 Go 配置 SDK，提供内�
 ## 为什么选择 Sundial
 
 - **类型安全访问**：应用直接读取自己定义的配置结构体，不再使用字符串路径和 `any`。
-- **快速读取**：`Get` 复制内存中已解析的配置，无需再次解码。
+- **快速读取**：`Get` 返回内存中已解析的快照，无需再次解码或深拷贝。
 - **持久化写入**：`Put` 有条件地保存完整的强类型配置文档。
 - **版本历史**：支持查看历史版本和恢复配置。
 - **实时更新**：自动重新加载将外部变化同步到内存。
@@ -62,7 +62,7 @@ func main() {
             CurrentRevisionKey: "production/app/metadata.yaml",
             RevisionKeyPrefix:  "production/app/",
         },
-    }, func(v Config) Config { return v })
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -70,21 +70,36 @@ func main() {
     entry := store.Get()
     fmt.Println(entry.Value.Port)
 
-    entry.Value.Port = 9090
-    if _, err := store.Put(ctx, entry); err != nil {
+    if _, err := store.Update(ctx, func(config *Config) error {
+        config.Port = 9090
+        return nil
+    }); err != nil {
         log.Fatal(err)
     }
 }
 ```
 
-必须显式提供非 nil 的 `clone` 函数，否则 `New` 返回 `ErrCloneRequired`。
-本例的配置只有值字段，使用 `func(v Config) Config { return v }` 即可。
-类型包含 map、slice、指针等可变引用时，需要复制所有引用的数据。
-函数必须支持并发调用，不能修改输入，也不能执行编码或解码。
+`Get` 返回共享的只读配置快照及其版本，无 error 返回，也不进行编码、解码或
+深拷贝。不要修改返回值，包括其中的 map、slice 和指针。Go 不强制只读，需要
+调用方遵守这个约定。`Update`、`Put`、`RestoreRevision` 成功后返回的结果，以及 `OnChange` 回调
+收到的配置，同样是共享只读快照。
 
-`Get` 返回独立的配置副本及其版本。`Put` 保存完整文档，版本过期时返回
-`ErrConflict`，不会自动合并或重试。取消 context 会停止自动加载。
-写入或加载失败时，保留内存中上一份有效配置。
+普通修改直接调用 `Update(ctx, func(*T) error)`，不需要先调用 `Get`。它基于
+缓存的原始字节和快照版本创建独立草稿，执行修改回调，再通过版本条件发布。
+解码、回调或发布失败时都保留原快照；返回结果是共享只读配置。调用期间不要并发修改回调草稿。
+回调内不要对同一 Client 调用 `Update`、`Put`、`Reload` 或 `RestoreRevision`，
+因为这些操作会获取同一个写锁。
+
+需要手动发布或显式处理版本时，调用 `Draft() (Entry[T], error)`：从缓存的原始字节解码出独立可修改的
+草稿，并保留快照对应的版本。这样读取路径无需解码，草稿修改在发布成功前
+不会影响缓存。通过 `Put` 发布期间，不要并发修改草稿。
+
+`New` 无需 clone 函数，也不通过反射限制配置类型；支持哪些类型由所选 Codec
+决定。Codec 每次 `Decode` 必须创建独立的可变对象，不能保留或复用这些对象的
+引用；`Encode` 不得修改输入。
+
+`Put` 保存完整文档，版本过期时返回 `ErrConflict`，不会自动合并或重试。
+取消 context 会停止自动加载。写入或加载失败时，保留内存中上一份有效配置。
 
 ## 文档
 

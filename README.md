@@ -10,7 +10,7 @@ in-memory reads, persistent writes, and live updates.
 ## Why Sundial
 
 - **Type-safe access** — applications read their own configuration struct instead of string paths and `any` values.
-- **Fast reads** — `Get` copies an already parsed in-memory value without decoding.
+- **Fast reads** — `Get` returns the already parsed in-memory snapshot without decoding or deep copying.
 - **Persistent writes** — `Put` conditionally saves one complete typed configuration document.
 - **Version history** — browse historical revisions and restore configuration.
 - **Live updates** — automatic reload keeps memory synchronized with external changes.
@@ -63,7 +63,7 @@ func main() {
             CurrentRevisionKey: "production/app/metadata.yaml",
             RevisionKeyPrefix:  "production/app/",
         },
-    }, func(v Config) Config { return v })
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -71,22 +71,41 @@ func main() {
     entry := store.Get()
     fmt.Println(entry.Value.Port)
 
-    entry.Value.Port = 9090
-    if _, err := store.Put(ctx, entry); err != nil {
+    if _, err := store.Update(ctx, func(config *Config) error {
+        config.Port = 9090
+        return nil
+    }); err != nil {
         log.Fatal(err)
     }
 }
 ```
 
-Always provide a non-nil `clone` function; otherwise `New` returns `ErrCloneRequired`.
-For configurations containing only value fields, use `func(v Config) Config { return v }`,
-as above. For maps, slices, pointers or other mutable references, copy all referenced data.
-The function must be safe for concurrent calls, must not change its input, and must not
-encode or decode.
+`Get` returns a shared read-only configuration snapshot with its revision, without
+an error return, encoding, decoding or deep copying. Do not modify its value,
+including nested maps, slices and pointers. Go does not enforce this read-only
+contract; callers must follow it. Successful `Update`, `Put` and `RestoreRevision` results and values
+passed to `OnChange` have the same shared read-only contract.
 
-`Get` returns an independent copy with its revision. `Put` saves the complete document;
-a stale revision returns `ErrConflict`, without automatic merging or retries.
-Canceling the context stops automatic reload.
+For ordinary edits, call `Update(ctx, func(*T) error)` directly; no preceding `Get`
+is needed. It creates an independent draft from the cached source bytes and
+snapshot revision, applies the callback, and publishes with revision protection.
+A decode, callback or publication failure leaves the cached snapshot unchanged.
+The returned entry is shared read-only. Do not modify the callback's draft
+concurrently with the call. The callback must not call `Update`, `Put`, `Reload`
+or `RestoreRevision` on the same client because they acquire the same write lock.
+
+For manual publication and explicit revision handling, call `Draft() (Entry[T], error)`. It decodes the cached source bytes
+into an independent editable value while retaining the snapshot's revision. This
+keeps decoding off the read path and isolates changes until publication succeeds.
+Do not modify a draft concurrently while publishing it with `Put`.
+
+`New` needs no clone function or reflection-based type validation. Supported
+configuration types are determined by the selected codec. Each codec `Decode`
+call must create independent mutable objects, without retaining or reusing their
+references; `Encode` must not modify its input.
+
+`Put` saves the complete document; a stale revision returns `ErrConflict`, without
+automatic merging or retries. Canceling the context stops automatic reload.
 Failed writes or reloads leave the last valid in-memory configuration unchanged.
 
 ## Documentation

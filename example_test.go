@@ -3,8 +3,6 @@ package sundial_test
 import (
 	"context"
 	"fmt"
-	"maps"
-	"slices"
 
 	"github.com/sundayfun/sundial"
 	providertesting "github.com/sundayfun/sundial/provider/testing"
@@ -20,7 +18,7 @@ func ExampleNew() {
 
 	// Use an in-memory test provider with an existing JSON document.
 	provider := providertesting.New([]byte(`{"port":8080}`))
-	client, err := sundial.New[Config](ctx, provider, func(v Config) Config { return v })
+	client, err := sundial.New[Config](ctx, provider)
 	if err != nil {
 		panic(err)
 	}
@@ -39,11 +37,14 @@ func ExampleClient_Put() {
 	defer cancel()
 
 	provider := providertesting.New([]byte(`{"port":8080}`))
-	client, err := sundial.New[Config](ctx, provider, func(v Config) Config { return v })
+	client, err := sundial.New[Config](ctx, provider)
 	if err != nil {
 		panic(err)
 	}
-	entry := client.Get()
+	entry, err := client.Draft()
+	if err != nil {
+		panic(err)
+	}
 
 	// Keep the observed revision while changing the complete document's value.
 	entry.Value.Port = 9090
@@ -71,12 +72,18 @@ func ExampleClient_Put_conflict() {
 	defer cancel()
 
 	provider := providertesting.New([]byte(`{"port":8080}`))
-	client, err := sundial.New[Config](ctx, provider, func(v Config) Config { return v })
+	client, err := sundial.New[Config](ctx, provider)
 	if err != nil {
 		panic(err)
 	}
-	entry := client.Get()
-	stale := entry
+	entry, err := client.Draft()
+	if err != nil {
+		panic(err)
+	}
+	stale, err := client.Draft()
+	if err != nil {
+		panic(err)
+	}
 	entry.Value.Port = 9090
 	if _, err = client.Put(ctx, entry); err != nil {
 		panic(err)
@@ -94,7 +101,7 @@ func ExampleClient_Put_conflict() {
 	// 9090
 }
 
-func ExampleNew_clone() {
+func ExampleClient_Draft() {
 	type Config struct {
 		Labels map[string]string `json:"labels"`
 		Tags   []string          `json:"tags"`
@@ -102,18 +109,45 @@ func ExampleNew_clone() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	provider := providertesting.New([]byte(`{"labels":{"region":"east"},"tags":["api"]}`))
-	client, err := sundial.New(ctx, provider, func(value Config) Config {
-		value.Labels = maps.Clone(value.Labels)
-		value.Tags = slices.Clone(value.Tags)
-		return value
-	})
+	client, err := sundial.New[Config](ctx, provider)
 	if err != nil {
 		panic(err)
 	}
-	entry := client.Get()
+	entry, err := client.Draft()
+	if err != nil {
+		panic(err)
+	}
 	entry.Value.Labels["region"] = "west"
 	entry.Value.Tags[0] = "worker"
 	current := client.Get()
 	fmt.Println(current.Value.Labels["region"], current.Value.Tags[0])
 	// Output: east api
+}
+
+func ExampleClient_Update() {
+	type Config struct {
+		Labels map[string]string `json:"labels"`
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	provider := providertesting.New([]byte(`{"labels":{"region":"east"}}`))
+	client, err := sundial.New[Config](ctx, provider)
+	if err != nil {
+		panic(err)
+	}
+
+	// Edit an independent draft without first calling Get.
+	saved, err := client.Update(ctx, func(config *Config) error {
+		config.Labels["region"] = "west"
+		return nil
+	})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(saved.Value.Labels["region"])
+	fmt.Println(client.Get().Value.Labels["region"])
+
+	// Output:
+	// west
+	// west
 }

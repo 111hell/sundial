@@ -62,7 +62,7 @@ func run() error {
 		}
 	}
 
-	store, err := sundial.New(ctx, provider, func(v config) config { return v },
+	store, err := sundial.New(ctx, provider,
 		sundial.WithCodec[config](yamlcodec.New()))
 	if err != nil {
 		return err
@@ -72,8 +72,10 @@ func run() error {
 	printEntry("loaded", entry)
 
 	if *port >= 0 {
-		entry.Value.Server.Port = *port
-		entry, err = store.Put(ctx, entry)
+		entry, err = store.Update(ctx, func(draft *config) error {
+			draft.Server.Port = *port
+			return nil
+		})
 		if err != nil {
 			return fmt.Errorf("update configuration: %w", err)
 		}

@@ -3,8 +3,6 @@ package sundial
 import "errors"
 
 var (
-	// ErrCloneRequired reports a missing deep-copy function at construction.
-	ErrCloneRequired = errors.New("sundial: clone function is required")
 	// ErrNotFound reports a missing configuration document.
 	ErrNotFound = errors.New("sundial: not found")
 	// ErrConflict reports a failed write condition, including an empty or stale revision ID.

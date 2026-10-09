@@ -24,13 +24,19 @@ go run ./examples/s3 -port 9090
 ```
 
 The update is conditional: it fails with a conflict if another writer publishes
-a revision after this process loads the configuration.
+a revision after `Update` creates its draft.
 
 The example uses the YAML codec. `metadata.yaml` contains `current_revision_id`;
 `<revision-id>.yaml` stores the original business configuration.
 Revision IDs use ULID. S3 user metadata uses `parent-id` to link each revision
 to its parent.
 
-This example explicitly passes `func(v config) config { return v }` for `clone`
-because its configuration contains only value fields. A nil `clone` is rejected.
-If you add maps, slices or pointers, update the function to deep-copy their data.
+The example creates its client with `sundial.New` and the YAML codec; no clone
+function is required. `Get` returns a shared read-only typed snapshot without
+encoding, decoding, deep copying or an error return. Callers must not modify it;
+Go does not enforce this contract. The update uses `Update` directly, without a preceding `Get` for editing. Internally,
+it decodes the cached source bytes into an independent draft with the snapshot's
+revision, applies the callback, and publishes conditionally. Failed edits or writes
+leave the cached snapshot unchanged. Successful write results are also shared
+read-only snapshots. `Draft` and `Put` remain available for manual publication.
+See the [read and write contract](../../README.md#quick-start) for codec requirements.

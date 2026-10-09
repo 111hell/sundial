@@ -49,6 +49,7 @@ func (s *Client[T]) ListRevisions(
 // still matches storage. currentRevisionID is the revision observed by the caller;
 // an empty or stale ID returns ErrConflict.
 // It decodes the historical content before writing and preserves its original bytes.
+// The returned Entry is shared and read-only.
 func (s *Client[T]) RestoreRevision(
 	ctx context.Context,
 	targetRevisionID string,
