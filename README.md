@@ -63,7 +63,7 @@ func main() {
             CurrentRevisionKey: "production/app/metadata.yaml",
             RevisionKeyPrefix:  "production/app/",
         },
-    }, func(config Config) Config { return config })
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -87,32 +87,22 @@ contract; callers must follow it. Successful `Update` and `RestoreRevision` resu
 passed to `OnChange` have the same shared read-only contract.
 
 For ordinary edits, call `Update(ctx, func(*T) error)` directly; no preceding `Get`
-is needed. It clones the current snapshot into an independent draft while retaining its
-revision, applies the callback, and publishes with revision protection.
-A decode, callback or publication failure leaves the cached snapshot unchanged.
-The returned entry is shared read-only. Do not modify the callback's draft
-concurrently with the call. The callback must not call `Update`, `Reload`
-or `RestoreRevision` on the same client because they acquire the same write lock.
+is needed. This is the client's only ordinary write interface. Internally, it
+decodes the cached source document into an independent draft, applies the
+callback, then encodes and decodes the result to validate it and isolate the
+stored snapshot before publishing with revision protection. Each update uses
+one encode and two decodes; the snapshot retains the source document.
+Any encoding, decoding, callback or publication failure leaves the cached
+snapshot unchanged. The returned entry is shared read-only. Do not modify the
+callback's draft concurrently with the call. The callback must not call `Update`,
+`Reload` or `RestoreRevision` on the same client because they acquire the same
+write lock.
 
-`Draft() (Entry[T], error)` creates an independent editable copy of the current
-snapshot while retaining its revision. With a clone function it does not use the
-codec; with nil it encodes and decodes the current value and may return an error. Editing this copy does
-not change or publish the cached configuration; use `Update` to persist changes.
-
-`New(ctx, provider, clone, opts...)` takes a `func(T) T` clone function for the
-root configuration type as a positional argument. Passing nil selects a default
-copy through encoding and decoding the current snapshot value, so callers can
-use `sundial.New[Config](ctx, provider, nil)` without writing a clone function.
-The default copy follows the codec's serialization and decoding semantics.
-A supplied clone function must deeply copy all mutable
-maps, slices and pointers without modifying its input. Nested types need not be
-passed separately; the root clone function owns the complete copy. The quick
-start uses a value copy because its configuration contains only an integer.
-
-Before publishing, `Update` encodes and decodes the edited value to validate it
-and isolate the stored snapshot from the callback's draft. Each codec `Decode`
-call must create independent mutable objects, without retaining or reusing their
-references; `Encode` must not modify its input.
+`New(ctx, provider, opts...)` needs no clone function from the caller. The internal
+draft reparses the cached document using the codec; a codec that injects dynamic
+values may produce a draft different from the already parsed snapshot. Each codec
+`Decode` call must create independent mutable objects, without retaining or
+reusing their references; `Encode` must not modify its input.
 
 `Update` saves the complete document using compare-and-swap (CAS) against the
 cached snapshot's revision. If another client publishes a new revision first,

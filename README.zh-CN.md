@@ -62,7 +62,7 @@ func main() {
             CurrentRevisionKey: "production/app/metadata.yaml",
             RevisionKeyPrefix:  "production/app/",
         },
-    }, func(config Config) Config { return config })
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -84,24 +84,16 @@ func main() {
 调用方遵守这个约定。`Update`、`RestoreRevision` 成功后返回的结果，以及 `OnChange` 回调
 收到的配置，同样是共享只读快照。
 
-普通修改直接调用 `Update(ctx, func(*T) error)`，不需要先调用 `Get`。它基于
-当前快照深拷贝出独立草稿并保留版本，执行修改回调，再通过版本条件发布。
-解码、回调或发布失败时都保留原快照；返回结果是共享只读配置。调用期间不要并发修改回调草稿。
-回调内不要对同一 Client 调用 `Update`、`Reload` 或 `RestoreRevision`，
-因为这些操作会获取同一个写锁。
+普通修改直接调用 `Update(ctx, func(*T) error)`，不需要先调用 `Get`。它是 Client
+唯一的普通写入接口。内部先解码缓存的配置原文，生成独立草稿，再执行修改回调；
+发布前编码并解码修改结果，以验证配置并隔离缓存快照与回调草稿，最后通过版本条件发布。
+每次更新执行一次编码、两次解码；快照同时保留对应的配置原文。
+编码、解码、回调或发布失败时都保留原快照；返回结果是共享只读配置。
+调用期间不要并发修改回调草稿。回调内不要对同一 Client 调用 `Update`、`Reload`
+或 `RestoreRevision`，因为这些操作会获取同一个写锁。
 
-`Draft() (Entry[T], error)` 返回当前快照的独立可修改副本并保留版本。
-提供 clone 函数时不使用 Codec；传入 nil 时通过编码并解码当前值复制，可能返回错误。修改副本不会改变或发布缓存中的配置；持久化修改请使用 `Update`。
-
-`New(ctx, provider, clone, opts...)` 接收根配置类型的 `func(T) T` 深拷贝函数。
-传入 nil 时，默认通过编码并解码当前快照的值生成副本，因此可以直接使用
-`sundial.New[Config](ctx, provider, nil)`，无需另写 clone 函数。
-默认复制遵循 Codec 的序列化与解码语义。
-提供的 clone 函数必须完整复制可变的 map、slice 和指针，且不得修改输入。
-不需要分别传入子类型的 clone，整个配置的复制由根类型的函数负责。快速开始中的
-配置只有整数，因此直接按值复制即可。
-
-发布前，`Update` 仍会编码并解码修改结果，以验证配置，并隔离缓存快照与回调草稿。
+`New(ctx, provider, opts...)` 无需调用方提供 clone 函数。草稿通过 Codec 重新解析
+缓存的原文；若 Codec 注入动态值，草稿可能与当前已解析的快照不同。
 Codec 每次 `Decode` 必须创建独立的可变对象，不能保留或复用这些对象的引用；
 `Encode` 不得修改输入。
 

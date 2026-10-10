@@ -31,22 +31,21 @@ The example uses the YAML codec. `metadata.yaml` contains `current_revision_id`;
 Revision IDs use ULID. S3 user metadata uses `parent-id` to link each revision
 to its parent.
 
-The example creates its client with `sundial.New`, the YAML codec and a required
-root configuration clone function as its third positional argument. Passing nil
-instead uses encoding and decoding of the current value to create independent
-copies, without requiring a custom clone function. Its fields contain only values, so a value
-copy is sufficient; configurations with maps, slices or pointers require a deep
-copy. `Get` returns a shared read-only typed snapshot without
-encoding, decoding, deep copying or an error return. Callers must not modify it;
-Go does not enforce this contract. The update uses `Update` directly, without a preceding `Get` for editing. Internally,
-it clones the current snapshot into an independent draft with the same revision,
-applies the callback, validates and isolates the edited value through encoding
-and decoding, and publishes conditionally. Failed edits or writes
-leave the cached snapshot unchanged. Successful write results are also shared
-read-only snapshots. `Draft` returns an independent editable copy and an error; when a clone function
-is provided it does not use the codec, while nil uses encoding and decoding that
-can fail; changes to it
-do not publish configuration. Use `Update` to persist edits.
+The example creates its client with `sundial.New` and the YAML codec; callers do
+not need to supply a clone function. `Get` returns a shared read-only typed
+snapshot without encoding, decoding, deep copying or an error return. Callers
+must not modify it; Go does not enforce this contract.
+
+`Update` is the client's only ordinary write interface and needs no preceding
+`Get` for editing. Internally, it decodes the cached source document into an
+independent draft, applies the callback, then validates and isolates the edited
+value through encoding and decoding before publishing conditionally. Each
+update uses one encode and two decodes. The snapshot retains the source
+document; reparsing it may differ from the parsed snapshot if the codec injects
+dynamic values.
+Failed edits or writes leave the cached snapshot unchanged. Successful write
+results are also shared read-only snapshots.
+
 The update callback must not call `Update`, `Reload` or `RestoreRevision` on the
 same client. See the [read and write contract](../../README.md#quick-start) for
-clone and codec requirements.
+codec requirements.

@@ -3,8 +3,6 @@ package sundial_test
 import (
 	"context"
 	"fmt"
-	"maps"
-	"slices"
 
 	"github.com/sundayfun/sundial"
 	providertesting "github.com/sundayfun/sundial/provider/testing"
@@ -20,7 +18,7 @@ func ExampleNew() {
 
 	// Use an in-memory test provider with an existing JSON document.
 	provider := providertesting.New([]byte(`{"port":8080}`))
-	client, err := sundial.New[Config](ctx, provider, nil)
+	client, err := sundial.New[Config](ctx, provider)
 	if err != nil {
 		panic(err)
 	}
@@ -39,9 +37,7 @@ func ExampleClient_Update_port() {
 	defer cancel()
 
 	provider := providertesting.New([]byte(`{"port":8080}`))
-	client, err := sundial.New(ctx, provider, func(config Config) Config {
-		return config
-	})
+	client, err := sundial.New[Config](ctx, provider)
 	if err != nil {
 		panic(err)
 	}
@@ -73,15 +69,11 @@ func ExampleClient_Update_conflict() {
 	defer cancel()
 
 	provider := providertesting.New([]byte(`{"port":8080}`))
-	client, err := sundial.New(ctx, provider, func(config Config) Config {
-		return config
-	})
+	client, err := sundial.New[Config](ctx, provider)
 	if err != nil {
 		panic(err)
 	}
-	staleClient, err := sundial.New(ctx, provider, func(config Config) Config {
-		return config
-	})
+	staleClient, err := sundial.New[Config](ctx, provider)
 	if err != nil {
 		panic(err)
 	}
@@ -109,33 +101,6 @@ func ExampleClient_Update_conflict() {
 	// 9090
 }
 
-func ExampleClient_Draft() {
-	type Config struct {
-		Labels map[string]string `json:"labels"`
-		Tags   []string          `json:"tags"`
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	provider := providertesting.New([]byte(`{"labels":{"region":"east"},"tags":["api"]}`))
-	client, err := sundial.New(ctx, provider, func(config Config) Config {
-		config.Labels = maps.Clone(config.Labels)
-		config.Tags = slices.Clone(config.Tags)
-		return config
-	})
-	if err != nil {
-		panic(err)
-	}
-	entry, err := client.Draft()
-	if err != nil {
-		panic(err)
-	}
-	entry.Value.Labels["region"] = "west"
-	entry.Value.Tags[0] = "worker"
-	current := client.Get()
-	fmt.Println(current.Value.Labels["region"], current.Value.Tags[0])
-	// Output: east api
-}
-
 func ExampleClient_Update() {
 	type Config struct {
 		Labels map[string]string `json:"labels"`
@@ -143,10 +108,7 @@ func ExampleClient_Update() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	provider := providertesting.New([]byte(`{"labels":{"region":"east"}}`))
-	client, err := sundial.New(ctx, provider, func(config Config) Config {
-		config.Labels = maps.Clone(config.Labels)
-		return config
-	})
+	client, err := sundial.New[Config](ctx, provider)
 	if err != nil {
 		panic(err)
 	}

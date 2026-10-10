@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"maps"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,16 +28,6 @@ type testConfig struct {
 	Ratio   float64           `json:"ratio"`
 	Counter int               `json:"counter"`
 	Labels  map[string]string `json:"labels"`
-}
-
-var cloneTestConfig = func(c testConfig) testConfig {
-	c.Server.Tags = slices.Clone(c.Server.Tags)
-	if c.Server.TLS != nil {
-		value := *c.Server.TLS
-		c.Server.TLS = &value
-	}
-	c.Labels = maps.Clone(c.Labels)
-	return c
 }
 
 type serverConfig struct {
@@ -110,11 +98,11 @@ func (c prefixedJSONCodec) Decode(data []byte, value any) error {
 	return json.Unmarshal(bytes.TrimPrefix(data, c.prefix), value)
 }
 
-func (c fixedEncodeCodec) Encode(any) ([]byte, error) {
+func (c *fixedEncodeCodec) Encode(any) ([]byte, error) {
 	return append([]byte(nil), c.encoded...), nil
 }
 
-func (fixedEncodeCodec) Decode(data []byte, value any) error {
+func (*fixedEncodeCodec) Decode(data []byte, value any) error {
 	return json.Unmarshal(data, value)
 }
 
@@ -128,7 +116,7 @@ func TestNewLoadsTypedConfigurationIntoMemory(t *testing.T) {
 	}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider, cloneTestConfig)
+		provider)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -161,7 +149,7 @@ func TestNewRejectsMissingConfiguration(t *testing.T) {
 
 	_, err := sundial.New[testConfig](
 		context.Background(),
-		providertesting.New(nil), cloneTestConfig)
+		providertesting.New(nil))
 	if !errors.Is(err, sundial.ErrNotFound) {
 		t.Fatalf("New() error = %v, want ErrNotFound", err)
 	}
@@ -172,7 +160,7 @@ func TestNewRejectsInvalidConfiguration(t *testing.T) {
 
 	_, err := sundial.New[testConfig](
 		context.Background(),
-		providertesting.New([]byte(`{"server":`)), cloneTestConfig)
+		providertesting.New([]byte(`{"server":`)))
 	if err == nil {
 		t.Fatal("New() error = nil, want decode failure")
 	}
@@ -216,8 +204,7 @@ func TestNewRejectsEmptyConfiguration(t *testing.T) {
 				context.Background(),
 				providertesting.New(
 					test.data,
-				),
-				cloneTestConfig, test.options...)
+				), test.options...)
 			if !errors.Is(err, sundial.ErrEmptyDocument) {
 				t.Fatalf("New() error = %v, want ErrEmptyDocument", err)
 			}
@@ -230,7 +217,7 @@ func TestNewAcceptsEmptyObjectConfiguration(t *testing.T) {
 
 	_, err := sundial.New[testConfig](
 		t.Context(),
-		providertesting.New([]byte(`{}`)), cloneTestConfig)
+		providertesting.New([]byte(`{}`)))
 	if err != nil {
 		t.Fatalf("New() error = %v, want nil", err)
 	}
@@ -248,8 +235,7 @@ func TestWithLoggerLogsSuccessfulOperationsAndErrors(t *testing.T) {
 	provider := providertesting.New([]byte(`{"enabled":false}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
-		cloneTestConfig, sundial.WithLogger[testConfig](logger))
+		provider, sundial.WithLogger[testConfig](logger))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -301,8 +287,7 @@ func TestWithLoggerLogsInitialLoadError(t *testing.T) {
 	}))
 	_, err := sundial.New[testConfig](
 		t.Context(),
-		providertesting.New([]byte(`{"enabled":`)),
-		cloneTestConfig, sundial.WithLogger[testConfig](logger))
+		providertesting.New([]byte(`{"enabled":`)), sundial.WithLogger[testConfig](logger))
 	if err == nil {
 		t.Fatal("New() error = nil, want decode failure")
 	}
@@ -320,8 +305,7 @@ func TestCustomCodec(t *testing.T) {
 	provider := providertesting.New([]byte(`custom:{"enabled":true}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
-		cloneTestConfig, sundial.WithCodec[testConfig](prefixedJSONCodec{prefix: []byte(prefix)}))
+		provider, sundial.WithCodec[testConfig](prefixedJSONCodec{prefix: []byte(prefix)}))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -343,8 +327,7 @@ func TestYAMLCodec(t *testing.T) {
 	provider := providertesting.New([]byte("server:\n  port: 8080\n"))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
-		cloneTestConfig, sundial.WithCodec[testConfig](yamlcodec.New()))
+		provider, sundial.WithCodec[testConfig](yamlcodec.New()))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -375,7 +358,7 @@ func TestUpdatePersistsCompleteDocument(t *testing.T) {
 	}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider, cloneTestConfig)
+		provider)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -409,7 +392,7 @@ func TestUpdatePersistsCompleteDocument(t *testing.T) {
 
 	reloaded, err := sundial.New[testConfig](
 		t.Context(),
-		provider, cloneTestConfig)
+		provider)
 	if err != nil {
 		t.Fatalf("reload New() error = %v", err)
 	}
@@ -426,8 +409,7 @@ func TestUpdateRejectsEmptyEncodedConfiguration(t *testing.T) {
 		provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
 		configStore, err := sundial.New[testConfig](
 			t.Context(),
-			provider,
-			cloneTestConfig, sundial.WithCodec[testConfig](fixedEncodeCodec{encoded: encoded}))
+			provider, sundial.WithCodec[testConfig](&fixedEncodeCodec{encoded: encoded}))
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
 		}
@@ -455,7 +437,7 @@ func TestReloadFailureKeepsPreviousMemory(t *testing.T) {
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider, cloneTestConfig)
+		provider)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -474,7 +456,7 @@ func TestReloadRejectsEmptyConfigurationAndKeepsPreviousMemory(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
-	configStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	configStore, err := sundial.New[testConfig](t.Context(), provider)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -494,7 +476,7 @@ func TestReloadRejectsMissingConfiguration(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"server":{"port":8080}}`))
-	configStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	configStore, err := sundial.New[testConfig](t.Context(), provider)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -509,40 +491,6 @@ func TestReloadRejectsMissingConfiguration(t *testing.T) {
 	}
 }
 
-func TestDraftReturnsDetachedConfiguration(t *testing.T) {
-	t.Parallel()
-
-	provider := providertesting.New([]byte(`{
-		"server":{"tags":["api"],"tls":{"enabled":true}},
-		"labels":{"region":"east"}
-	}`))
-	configStore, err := sundial.New[testConfig](
-		t.Context(),
-		provider, cloneTestConfig)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	entry, err := configStore.Draft()
-	require.NoError(t, err)
-	config := entry.Value
-	config.Server.Tags[0] = "mutated"
-	config.Server.TLS.Enabled = false
-	config.Labels["region"] = "west"
-
-	currentEntry := configStore.Get()
-	current := currentEntry.Value
-	if current.Server.Tags[0] != "api" {
-		t.Fatalf("detached tag = %q, want api", current.Server.Tags[0])
-	}
-	if !current.Server.TLS.Enabled {
-		t.Fatal("detached TLS.Enabled = false, want true")
-	}
-	if current.Labels["region"] != "east" {
-		t.Fatalf("detached region = %q, want east", current.Labels["region"])
-	}
-}
-
 func TestAutomaticNativeWatcherReloadsExternalChanges(t *testing.T) {
 	t.Parallel()
 
@@ -550,9 +498,7 @@ func TestAutomaticNativeWatcherReloadsExternalChanges(t *testing.T) {
 	changed := make(chan sundial.Entry[testConfig], 1)
 	_, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
-
-		cloneTestConfig, sundial.WithOnChange[testConfig](func(entry sundial.Entry[testConfig]) {
+		provider, sundial.WithOnChange[testConfig](func(entry sundial.Entry[testConfig]) {
 			changed <- entry
 		}))
 	if err != nil {
@@ -595,7 +541,7 @@ func TestContextCancellationStopsAutomaticReload(t *testing.T) {
 	}
 	configStore, err := sundial.New[testConfig](
 		ctx,
-		provider, cloneTestConfig)
+		provider)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -626,9 +572,7 @@ func TestNativeWatcherReceivesReloadError(t *testing.T) {
 	reported := make(chan error, 1)
 	_, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
-
-		cloneTestConfig, sundial.WithOnError[testConfig](func(err error) {
+		provider, sundial.WithOnError[testConfig](func(err error) {
 			reported <- err
 		}))
 	if err != nil {
@@ -684,11 +628,11 @@ func TestUpdateRejectsStaleRevisionAcrossInstancesAndAllowsRetry(t *testing.T) {
 	t.Parallel()
 
 	provider := providertesting.New([]byte(`{"counter":0,"enabled":false}`))
-	firstStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	firstStore, err := sundial.New[testConfig](t.Context(), provider)
 	if err != nil {
 		t.Fatalf("first New() error = %v", err)
 	}
-	secondStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	secondStore, err := sundial.New[testConfig](t.Context(), provider)
 	if err != nil {
 		t.Fatalf("second New() error = %v", err)
 	}
@@ -722,7 +666,7 @@ func TestReloadTracksChangedRevisionIDWhenContentIsUnchanged(t *testing.T) {
 
 	data := []byte(`{"enabled":true}`)
 	provider := providertesting.New(data)
-	configStore, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	configStore, err := sundial.New[testConfig](t.Context(), provider)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -748,7 +692,7 @@ func TestConcurrentReadsAndWrites(t *testing.T) {
 	provider := providertesting.New([]byte(`{"counter":0}`))
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		provider, cloneTestConfig)
+		provider)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -776,7 +720,7 @@ func TestRevisionOperationsReturnUnsupportedForBasicProvider(t *testing.T) {
 	t.Parallel()
 	configStore, err := sundial.New[testConfig](
 		t.Context(),
-		providertesting.New([]byte(`{"enabled":true}`)), cloneTestConfig)
+		providertesting.New([]byte(`{"enabled":true}`)))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -833,8 +777,7 @@ func TestGetDoesNotDecodeAcceptedConfiguration(t *testing.T) {
 	t.Parallel()
 	provider := providertesting.New([]byte(`{"counter":1}`))
 	documentCodec := &countingCodec{}
-	store, err := sundial.New[testConfig](t.Context(), provider,
-		cloneTestConfig, sundial.WithCodec[testConfig](documentCodec))
+	store, err := sundial.New[testConfig](t.Context(), provider, sundial.WithCodec[testConfig](documentCodec))
 	require.NoError(t, err)
 	for range 10 {
 		require.Equal(t, 1, store.Get().Value.Counter)
@@ -844,95 +787,18 @@ func TestGetDoesNotDecodeAcceptedConfiguration(t *testing.T) {
 	assert.Zero(t, documentCodec.encodes.Load())
 }
 
-func TestGetSharesReadOnlyReferencesAndDraftClonesIndependently(t *testing.T) {
+func TestGetSharesReadOnlyReferences(t *testing.T) {
 	t.Parallel()
 	provider := providertesting.New([]byte(`{"server":{"tags":["api"],"tls":{"enabled":true}},"labels":{"region":"east"}}`))
 	documentCodec := &countingCodec{}
-	store, err := sundial.New[testConfig](
-		t.Context(),
-		provider,
-
-		cloneTestConfig, sundial.WithCodec[testConfig](documentCodec),
-	)
+	store, err := sundial.New[testConfig](t.Context(), provider, sundial.WithCodec[testConfig](documentCodec))
 	require.NoError(t, err)
 	first := store.Get()
 	second := store.Get()
 	assert.Same(t, first.Value.Server.TLS, second.Value.Server.TLS)
 	assert.Same(t, &first.Value.Server.Tags[0], &second.Value.Server.Tags[0])
 	assert.EqualValues(t, 1, documentCodec.decodes.Load())
-	draft, err := store.Draft()
-	require.NoError(t, err)
-	assert.Equal(t, first, draft)
-	assert.EqualValues(t, 1, documentCodec.decodes.Load())
 	assert.Zero(t, documentCodec.encodes.Load())
-	assert.Equal(t, 1, provider.GetCount())
-	draft.Value.Server.Tags[0] = "editor"
-	draft.Value.Server.TLS.Enabled = false
-	draft.Value.Labels["region"] = "west"
-	assert.Equal(t, first, store.Get())
-	assert.Equal(t, "api", store.Get().Value.Server.Tags[0])
-	assert.True(t, store.Get().Value.Server.TLS.Enabled)
-	assert.Equal(t, "east", store.Get().Value.Labels["region"])
-}
-
-func TestDraftDoesNotRequireCodecAfterInitialization(t *testing.T) {
-	t.Parallel()
-	provider := providertesting.New([]byte(`{"counter":1,"labels":{"region":"east"}}`))
-	documentCodec := &countingCodec{}
-	store, err := sundial.New[testConfig](
-		t.Context(),
-		provider,
-
-		cloneTestConfig, sundial.WithCodec[testConfig](documentCodec),
-	)
-	require.NoError(t, err)
-	before := store.Get()
-	documentCodec.failDecode.Store(true)
-	draft, err := store.Draft()
-	require.NoError(t, err)
-	assert.Equal(t, before, draft)
-	draft.Value.Labels["region"] = "west"
-	assert.Equal(t, "east", store.Get().Value.Labels["region"])
-	assert.EqualValues(t, 1, documentCodec.decodes.Load())
-	assert.Zero(t, documentCodec.encodes.Load())
-	assert.Equal(t, 1, provider.GetCount())
-	assert.Zero(t, provider.PutIfRevisionCount())
-}
-
-func TestDraftKeepsCapturedValueRevisionPairDuringPublication(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		provider := providertesting.New([]byte(`{"counter":0}`))
-		cloning := make(chan struct{})
-		release := make(chan struct{})
-		var blockDraft atomic.Bool
-		clone := func(value testConfig) testConfig {
-			if blockDraft.CompareAndSwap(true, false) {
-				close(cloning)
-				<-release
-			}
-			return cloneTestConfig(value)
-		}
-		store, err := sundial.New[testConfig](t.Context(), provider, clone)
-		require.NoError(t, err)
-		before := store.Get()
-		blockDraft.Store(true)
-		var draft sundial.Entry[testConfig]
-		var draftErr error
-		var group sync.WaitGroup
-		group.Go(func() { draft, draftErr = store.Draft() })
-		<-cloning
-		saved, err := store.Update(t.Context(), func(config *testConfig) error {
-			config.Counter = 1
-			return nil
-		})
-		require.NoError(t, err)
-		close(release)
-		group.Wait()
-		require.NoError(t, draftErr)
-		assert.Equal(t, before, draft)
-		assert.Equal(t, saved, store.Get())
-	})
 }
 
 func TestUpdateUsesEncodedThenDecodedValue(t *testing.T) {
@@ -941,8 +807,11 @@ func TestUpdateUsesEncodedThenDecodedValue(t *testing.T) {
 		t.Run(encoded, func(t *testing.T) {
 			t.Parallel()
 			provider := providertesting.New([]byte(`{"counter":0}`))
-			store, err := sundial.New[testConfig](t.Context(), provider,
-				cloneTestConfig, sundial.WithCodec[testConfig](fixedEncodeCodec{encoded: []byte(encoded)}))
+			store, err := sundial.New[testConfig](
+				t.Context(),
+				provider,
+				sundial.WithCodec[testConfig](&fixedEncodeCodec{encoded: []byte(encoded)}),
+			)
 			require.NoError(t, err)
 			before := store.Get()
 			saved, err := store.Update(t.Context(), func(config *testConfig) error {
@@ -967,7 +836,7 @@ func TestUpdateUsesEncodedThenDecodedValue(t *testing.T) {
 func TestConcurrentGetPreservesValueRevisionPair(t *testing.T) {
 	t.Parallel()
 	provider := providertesting.New([]byte(`{"counter":0,"labels":{"region":"east"}}`))
-	store, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	store, err := sundial.New[testConfig](t.Context(), provider)
 	require.NoError(t, err)
 	var group sync.WaitGroup
 	for range 8 {
@@ -1014,9 +883,7 @@ func TestWatchRetriesDecodeFailureAndReportsReadOnlySnapshot(t *testing.T) {
 		provider := &retryDecodeWatcher{Provider: providertesting.New([]byte(`{"counter":0}`))}
 		errorsSeen := make(chan error, 2)
 		changes := make(chan sundial.Entry[testConfig], 2)
-		store, err := sundial.New[testConfig](ctx, provider,
-
-			cloneTestConfig, sundial.WithOnError[testConfig](func(err error) { errorsSeen <- err }),
+		store, err := sundial.New[testConfig](ctx, provider, sundial.WithOnError[testConfig](func(err error) { errorsSeen <- err }),
 			sundial.WithOnChange(func(entry sundial.Entry[testConfig]) {
 				changes <- entry
 			}))
@@ -1052,8 +919,7 @@ func TestOnChangeStillOnlyReportsAutomaticContentChanges(t *testing.T) {
 		defer cancel()
 		provider := providertesting.NewWatcher([]byte(`{"counter":0}`))
 		var changes atomic.Int64
-		store, err := sundial.New[testConfig](ctx, provider,
-			cloneTestConfig, sundial.WithOnChange(func(sundial.Entry[testConfig]) { changes.Add(1) }))
+		store, err := sundial.New[testConfig](ctx, provider, sundial.WithOnChange(func(sundial.Entry[testConfig]) { changes.Add(1) }))
 		require.NoError(t, err)
 		synctest.Wait()
 		assert.Zero(t, changes.Load())
@@ -1084,14 +950,12 @@ func TestReloadAndUpdateSerializePublication(t *testing.T) {
 		decoding := make(chan struct{})
 		release := make(chan struct{})
 		var blocked atomic.Bool
-		store, err := sundial.New[testConfig](ctx, provider,
-
-			cloneTestConfig, sundial.WithCodec[testConfig](&countingCodec{beforeDecode: func(data []byte) {
-				if string(data) == `{"counter":1}` && blocked.CompareAndSwap(false, true) {
-					close(decoding)
-					<-release
-				}
-			}}))
+		store, err := sundial.New[testConfig](ctx, provider, sundial.WithCodec[testConfig](&countingCodec{beforeDecode: func(data []byte) {
+			if string(data) == `{"counter":1}` && blocked.CompareAndSwap(false, true) {
+				close(decoding)
+				<-release
+			}
+		}}))
 		require.NoError(t, err)
 		provider.SetData([]byte(`{"counter":1}`))
 		reloaded := make(chan error, 1)
@@ -1124,7 +988,7 @@ func TestUpdateSupportsValueFields(t *testing.T) {
 		Servers [2]server `json:"servers"`
 	}
 	provider := providertesting.New([]byte(`{"name":"app","servers":[{"port":8080,"enabled":true},{}]}`))
-	store, err := sundial.New[config](t.Context(), provider, func(value config) config { return value })
+	store, err := sundial.New[config](t.Context(), provider)
 	require.NoError(t, err)
 	before := store.Get()
 	saved, err := store.Update(t.Context(), func(draft *config) error {
@@ -1142,7 +1006,7 @@ func TestUpdateSupportsValueFields(t *testing.T) {
 func TestNewSupportsScalar(t *testing.T) {
 	t.Parallel()
 	provider := providertesting.New([]byte(`"hello"`))
-	store, err := sundial.New[string](t.Context(), provider, func(value string) string { return value })
+	store, err := sundial.New[string](t.Context(), provider)
 	require.NoError(t, err)
 	assert.Equal(t, "hello", store.Get().Value)
 }
@@ -1158,33 +1022,23 @@ func TestNewAcceptsCodecSupportedTypes(t *testing.T) {
 		Node      *node     `json:"node"`
 	}
 	provider := providertesting.New([]byte(`{"timestamp":"2026-10-09T00:00:00Z","value":{"enabled":true},"node":{"next":{}}}`))
-	store, err := sundial.New[config](t.Context(), provider, func(value config) config {
-		var cloneNode func(*node) *node
-		cloneNode = func(value *node) *node {
-			if value == nil {
-				return nil
-			}
-			return &node{Next: cloneNode(value.Next)}
-		}
-		value.Node = cloneNode(value.Node)
-		if contents, ok := value.Value.(map[string]any); ok {
-			value.Value = maps.Clone(contents)
-		}
-		return value
-	})
+	store, err := sundial.New[config](t.Context(), provider)
 	require.NoError(t, err)
 	assert.Equal(t, time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC), store.Get().Value.Timestamp)
-	draft, err := store.Draft()
-	require.NoError(t, err)
-	value, ok := draft.Value.Value.(map[string]any)
-	require.True(t, ok)
-	value["enabled"] = false
-	draft.Value.Node.Next = nil
+	wantErr := errors.New("reject change")
+	_, err = store.Update(t.Context(), func(draft *config) error {
+		value, ok := draft.Value.(map[string]any)
+		require.True(t, ok)
+		value["enabled"] = false
+		draft.Node.Next = nil
+		return wantErr
+	})
+	require.ErrorIs(t, err, wantErr)
 	assert.Equal(t, map[string]any{"enabled": true}, store.Get().Value.Value)
 	assert.NotNil(t, store.Get().Value.Node.Next)
 }
 
-func TestDraftDetachesNestedReferences(t *testing.T) {
+func TestUpdateDetachesNestedReferences(t *testing.T) {
 	t.Parallel()
 	type item struct {
 		Values  []string `json:"values"`
@@ -1198,36 +1052,17 @@ func TestDraftDetachesNestedReferences(t *testing.T) {
 		EmptyMap    map[string]string   `json:"empty_map"`
 	}
 	provider := providertesting.New([]byte(`{"groups":{"a":[{"values":["one"],"enabled":true},null]},"empty_values":[],"empty_map":{}}`))
-	store, err := sundial.New[config](t.Context(), provider, func(value config) config {
-		value.Groups = maps.Clone(value.Groups)
-		for key, items := range value.Groups {
-			for i, entry := range items {
-				if entry != nil {
-					cloned := *entry
-					cloned.Values = slices.Clone(entry.Values)
-					if entry.Enabled != nil {
-						enabled := *entry.Enabled
-						cloned.Enabled = &enabled
-					}
-					items[i] = &cloned
-				}
-			}
-			value.Groups[key] = items
-		}
-		value.NilValues = slices.Clone(value.NilValues)
-		value.EmptyValues = slices.Clone(value.EmptyValues)
-		value.NilMap = maps.Clone(value.NilMap)
-		value.EmptyMap = maps.Clone(value.EmptyMap)
-		return value
-	})
+	store, err := sundial.New[config](t.Context(), provider)
 	require.NoError(t, err)
 	before := store.Get()
-	draft, err := store.Draft()
-	require.NoError(t, err)
-	value := draft.Value
-	value.Groups["a"][0].Values[0] = "changed"
-	*value.Groups["a"][0].Enabled = false
-	delete(value.Groups, "a")
+	wantErr := errors.New("reject change")
+	_, err = store.Update(t.Context(), func(value *config) error {
+		value.Groups["a"][0].Values[0] = "changed"
+		*value.Groups["a"][0].Enabled = false
+		delete(value.Groups, "a")
+		return wantErr
+	})
+	require.ErrorIs(t, err, wantErr)
 	assert.Equal(t, before, store.Get())
 	assert.Nil(t, before.Value.NilValues)
 	assert.NotNil(t, before.Value.EmptyValues)
@@ -1238,7 +1073,7 @@ func TestDraftDetachesNestedReferences(t *testing.T) {
 	assert.True(t, *store.Get().Value.Groups["a"][0].Enabled)
 }
 
-func TestDraftSupportsNamedPointerType(t *testing.T) {
+func TestUpdateSupportsNamedPointerType(t *testing.T) {
 	t.Parallel()
 	type values []string
 	type namedPointer *values
@@ -1246,17 +1081,14 @@ func TestDraftSupportsNamedPointerType(t *testing.T) {
 		Values namedPointer `json:"values"`
 	}
 	provider := providertesting.New([]byte(`{"values":["original"]}`))
-	store, err := sundial.New[config](t.Context(), provider, func(value config) config {
-		if value.Values != nil {
-			contents := slices.Clone(*value.Values)
-			value.Values = namedPointer(&contents)
-		}
-		return value
+	store, err := sundial.New[config](t.Context(), provider)
+	require.NoError(t, err)
+	wantErr := errors.New("reject change")
+	_, err = store.Update(t.Context(), func(value *config) error {
+		(*value.Values)[0] = "changed"
+		return wantErr
 	})
-	require.NoError(t, err)
-	entry, err := store.Draft()
-	require.NoError(t, err)
-	(*entry.Value.Values)[0] = "changed"
+	require.ErrorIs(t, err, wantErr)
 	assert.Equal(t, "original", (*store.Get().Value.Values)[0])
 }
 
@@ -1267,7 +1099,7 @@ func BenchmarkGetVsJSONDecode(b *testing.B) {
 		benchmarkTypedReads[testConfig](b, []byte(`{
  "server":{"host":"localhost","port":8080,"tags":["api","worker"],"tls":{"enabled":true}},
  "enabled":true,"counter":1,"labels":{"region":"east"}
-}`), cloneTestConfig)
+}`))
 	})
 	b.Run("MapAndSlice", func(b *testing.B) {
 		type rule struct {
@@ -1290,24 +1122,14 @@ func BenchmarkGetVsJSONDecode(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		benchmarkTypedReads[config](b, data, func(value config) config {
-			value.Operations = maps.Clone(value.Operations)
-			for key, rules := range value.Operations {
-				rules = slices.Clone(rules)
-				for i := range rules {
-					rules[i].Tags = slices.Clone(rules[i].Tags)
-				}
-				value.Operations[key] = rules
-			}
-			return value
-		})
+		benchmarkTypedReads[config](b, data)
 	})
 }
 
-func benchmarkTypedReads[T any](b *testing.B, data []byte, clone func(T) T) {
+func benchmarkTypedReads[T any](b *testing.B, data []byte) {
 	b.Helper()
 	b.Run("Get", func(b *testing.B) {
-		store, err := sundial.New[T](b.Context(), providertesting.New(data), clone)
+		store, err := sundial.New[T](b.Context(), providertesting.New(data))
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1330,7 +1152,7 @@ func benchmarkTypedReads[T any](b *testing.B, data []byte, clone func(T) T) {
 func TestUpdateCallbackFailureKeepsAcceptedSnapshot(t *testing.T) {
 	t.Parallel()
 	provider := providertesting.New([]byte(`{"server":{"tags":["api"],"tls":{"enabled":true}},"labels":{"region":"east"}}`))
-	store, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	store, err := sundial.New[testConfig](t.Context(), provider)
 	require.NoError(t, err)
 	before := store.Get()
 	beforeData := provider.Data()
@@ -1353,7 +1175,7 @@ func TestUpdateCallbackFailureKeepsAcceptedSnapshot(t *testing.T) {
 func TestUpdateWriteFailureKeepsAcceptedSnapshot(t *testing.T) {
 	t.Parallel()
 	provider := providertesting.New([]byte(`{"counter":1,"labels":{"region":"east"}}`))
-	store, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	store, err := sundial.New[testConfig](t.Context(), provider)
 	require.NoError(t, err)
 	before := store.Get()
 	beforeData := provider.Data()
@@ -1376,16 +1198,14 @@ func TestUpdatePublicationDecodeFailureKeepsSnapshot(t *testing.T) {
 	documentCodec := &countingCodec{}
 	store, err := sundial.New[testConfig](
 		t.Context(),
-		provider,
-
-		cloneTestConfig, sundial.WithCodec[testConfig](documentCodec),
+		provider, sundial.WithCodec[testConfig](documentCodec),
 	)
 	require.NoError(t, err)
 	before := store.Get()
-	documentCodec.failDecode.Store(true)
 	called := false
 	_, err = store.Update(t.Context(), func(*testConfig) error {
 		called = true
+		documentCodec.failDecode.Store(true)
 		return nil
 	})
 	require.ErrorContains(t, err, "decode unavailable")
@@ -1397,7 +1217,7 @@ func TestUpdatePublicationDecodeFailureKeepsSnapshot(t *testing.T) {
 func TestConcurrentUpdatesDoNotLoseChanges(t *testing.T) {
 	t.Parallel()
 	provider := providertesting.New([]byte(`{"counter":0}`))
-	store, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	store, err := sundial.New[testConfig](t.Context(), provider)
 	require.NoError(t, err)
 	var group sync.WaitGroup
 	for range 8 {
@@ -1422,7 +1242,7 @@ func TestConcurrentUpdatesDoNotLoseChanges(t *testing.T) {
 func TestUpdateDetachesRetainedCallbackDraft(t *testing.T) {
 	t.Parallel()
 	provider := providertesting.New([]byte(`{"server":{"tags":["api"],"tls":{"enabled":true}},"labels":{"region":"east"}}`))
-	store, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	store, err := sundial.New[testConfig](t.Context(), provider)
 	require.NoError(t, err)
 	var retained *testConfig
 	saved, err := store.Update(t.Context(), func(draft *testConfig) error {
@@ -1449,9 +1269,9 @@ func TestUpdateDetachesRetainedCallbackDraft(t *testing.T) {
 func TestUpdateAcrossInstancesRejectsStaleSnapshot(t *testing.T) {
 	t.Parallel()
 	provider := providertesting.New([]byte(`{"counter":0}`))
-	first, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	first, err := sundial.New[testConfig](t.Context(), provider)
 	require.NoError(t, err)
-	second, err := sundial.New[testConfig](t.Context(), provider, cloneTestConfig)
+	second, err := sundial.New[testConfig](t.Context(), provider)
 	require.NoError(t, err)
 	before := second.Get()
 	increment := func(draft *testConfig) error {
@@ -1472,73 +1292,23 @@ func TestUpdateAcrossInstancesRejectsStaleSnapshot(t *testing.T) {
 	assert.Equal(t, 2, saved.Value.Counter)
 }
 
-func TestDraftClonesDecodedSnapshotRatherThanDocument(t *testing.T) {
-	t.Parallel()
-	var decodes int
-	documentCodec := &countingCodec{afterDecode: func(value any) {
-		decodes++
-		config, ok := value.(*testConfig)
-		require.True(t, ok)
-		config.Counter += decodes
-	}}
-	provider := providertesting.New([]byte(`{"counter":1}`))
-	store, err := sundial.New[testConfig](
-		t.Context(),
-		provider,
-
-		cloneTestConfig, sundial.WithCodec[testConfig](documentCodec),
-	)
-	require.NoError(t, err)
-	before := store.Get()
-	require.Equal(t, 2, before.Value.Counter)
-	draft, err := store.Draft()
-	require.NoError(t, err)
-	assert.Equal(t, before, draft)
-	assert.Equal(t, 1, decodes)
-	assert.Zero(t, documentCodec.encodes.Load())
-}
-
-func TestDraftDefaultCloneIsolatesReferences(t *testing.T) {
-	t.Parallel()
-	provider := providertesting.New([]byte(`{"server":{"tags":["api"],"tls":{"enabled":true}},"labels":{"region":"east"}}`))
-	documentCodec := &countingCodec{}
-	store, err := sundial.New[testConfig](t.Context(), provider, nil, sundial.WithCodec[testConfig](documentCodec))
-	require.NoError(t, err)
-	before := store.Get()
-	draft, err := store.Draft()
-	require.NoError(t, err)
-	assert.Equal(t, before, draft)
-	draft.Value.Server.Tags[0] = "changed"
-	draft.Value.Server.TLS.Enabled = false
-	draft.Value.Labels["region"] = "west"
-	assert.Equal(t, before, store.Get())
-	assert.Equal(t, "api", store.Get().Value.Server.Tags[0])
-	assert.True(t, store.Get().Value.Server.TLS.Enabled)
-	assert.Equal(t, "east", store.Get().Value.Labels["region"])
-	assert.EqualValues(t, 1, documentCodec.encodes.Load())
-	assert.EqualValues(t, 2, documentCodec.decodes.Load())
-	assert.Equal(t, 1, provider.GetCount())
-}
-
-func TestDefaultCloneFailureKeepsSnapshotAndSkipsUpdate(t *testing.T) {
+func TestUpdateCodecFailuresKeepSnapshot(t *testing.T) {
 	t.Parallel()
 	for _, operation := range []string{"encode", "decode"} {
 		t.Run(operation, func(t *testing.T) {
 			t.Parallel()
 			provider := providertesting.New([]byte(`{"counter":1,"labels":{"region":"east"}}`))
 			documentCodec := &countingCodec{}
-			store, err := sundial.New[testConfig](t.Context(), provider, nil, sundial.WithCodec[testConfig](documentCodec))
+			store, err := sundial.New[testConfig](t.Context(), provider, sundial.WithCodec[testConfig](documentCodec))
 			require.NoError(t, err)
 			before := store.Get()
 			beforeData := provider.Data()
 			documentCodec.failEncode.Store(operation == "encode")
 			documentCodec.failDecode.Store(operation == "decode")
-			_, err = store.Draft()
-			require.ErrorContains(t, err, operation+" unavailable")
 			called := false
 			_, err = store.Update(t.Context(), func(*testConfig) error { called = true; return nil })
 			require.ErrorContains(t, err, operation+" unavailable")
-			assert.False(t, called)
+			assert.Equal(t, operation == "encode", called)
 			assert.Equal(t, before, store.Get())
 			assert.Equal(t, beforeData, provider.Data())
 			assert.Zero(t, provider.PutIfRevisionCount())
@@ -1546,39 +1316,7 @@ func TestDefaultCloneFailureKeepsSnapshotAndSkipsUpdate(t *testing.T) {
 	}
 }
 
-func TestDefaultCloneKeepsCapturedValueRevisionPairDuringPublication(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		provider := providertesting.New([]byte(`{"counter":0}`))
-		decoding := make(chan struct{})
-		release := make(chan struct{})
-		var blockDraft atomic.Bool
-		documentCodec := &countingCodec{beforeDecode: func([]byte) {
-			if blockDraft.CompareAndSwap(true, false) {
-				close(decoding)
-				<-release
-			}
-		}}
-		store, err := sundial.New[testConfig](t.Context(), provider, nil, sundial.WithCodec[testConfig](documentCodec))
-		require.NoError(t, err)
-		before := store.Get()
-		blockDraft.Store(true)
-		var draft sundial.Entry[testConfig]
-		var draftErr error
-		var group sync.WaitGroup
-		group.Go(func() { draft, draftErr = store.Draft() })
-		<-decoding
-		saved, err := store.Update(t.Context(), func(config *testConfig) error { config.Counter = 1; return nil })
-		require.NoError(t, err)
-		close(release)
-		group.Wait()
-		require.NoError(t, draftErr)
-		assert.Equal(t, before, draft)
-		assert.Equal(t, saved, store.Get())
-	})
-}
-
-func TestDefaultCloneEncodesCurrentSnapshot(t *testing.T) {
+func TestUpdateDecodesCachedDocument(t *testing.T) {
 	t.Parallel()
 	var decodes int
 	documentCodec := &countingCodec{afterDecode: func(value any) {
@@ -1590,13 +1328,50 @@ func TestDefaultCloneEncodesCurrentSnapshot(t *testing.T) {
 		}
 	}}
 	provider := providertesting.New([]byte(`{"counter":1}`))
-	store, err := sundial.New[testConfig](t.Context(), provider, nil, sundial.WithCodec[testConfig](documentCodec))
+	store, err := sundial.New[testConfig](t.Context(), provider, sundial.WithCodec[testConfig](documentCodec))
 	require.NoError(t, err)
 	before := store.Get()
 	require.Equal(t, 42, before.Value.Counter)
-	draft, err := store.Draft()
+	saved, err := store.Update(t.Context(), func(value *testConfig) error {
+		assert.Equal(t, 1, value.Counter)
+		value.Counter++
+		return nil
+	})
 	require.NoError(t, err)
-	assert.Equal(t, before, draft)
-	assert.Equal(t, 2, decodes)
+	assert.Equal(t, 2, saved.Value.Counter)
+	assert.Equal(t, 3, decodes)
 	assert.EqualValues(t, 1, documentCodec.encodes.Load())
+}
+
+func TestUpdateUsesLatestCachedDocumentAndRevision(t *testing.T) {
+	t.Parallel()
+	provider := providertesting.New([]byte(`{"counter":1}`))
+	documentCodec := &countingCodec{}
+	store, err := sundial.New[testConfig](t.Context(), provider, sundial.WithCodec[testConfig](documentCodec))
+	require.NoError(t, err)
+	for _, wantBefore := range []int{1, 2} {
+		previous := store.Get()
+		saved, updateErr := store.Update(t.Context(), func(value *testConfig) error {
+			assert.Equal(t, wantBefore, value.Counter)
+			value.Counter++
+			return nil
+		})
+		require.NoError(t, updateErr)
+		assert.Equal(t, previous.Revision.ID, saved.Revision.ParentID)
+		assert.Equal(t, wantBefore+1, saved.Value.Counter)
+	}
+	provider.SetData([]byte(`{"counter":10}`))
+	require.NoError(t, store.Reload(t.Context()))
+	previous := store.Get()
+	saved, err := store.Update(t.Context(), func(value *testConfig) error {
+		assert.Equal(t, 10, value.Counter)
+		value.Counter++
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, previous.Revision.ID, saved.Revision.ParentID)
+	assert.Equal(t, 11, saved.Value.Counter)
+	assert.EqualValues(t, 3, documentCodec.encodes.Load())
+	assert.EqualValues(t, 8, documentCodec.decodes.Load())
+	assert.Equal(t, 2, provider.GetCount())
 }

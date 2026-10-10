@@ -73,13 +73,12 @@ var (
 )
 
 // New creates a Sundial client backed by a versioned S3 Provider.
-// clone may be nil to use Codec copying; see sundial.New for its contract.
-func New[T any](ctx context.Context, cfg *Config, clone func(T) T, opts ...sundial.Option[T]) (*sundial.Client[T], error) {
+func New[T any](ctx context.Context, cfg *Config, opts ...sundial.Option[T]) (*sundial.Client[T], error) {
 	provider, err := NewProvider(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	return sundial.New(ctx, provider, clone, opts...)
+	return sundial.New(ctx, provider, opts...)
 }
 
 // NewProvider creates an S3 Provider using the AWS SDK default configuration chain.

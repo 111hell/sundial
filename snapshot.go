@@ -13,6 +13,7 @@ import (
 // revision paired with the document.
 type snapshot[T any] struct {
 	value    T
+	data     []byte
 	hash     [sha256.Size]byte
 	revision Revision
 }
@@ -28,6 +29,7 @@ func (s *Client[T]) decodeSnapshot(
 	}
 	return &snapshot[T]{
 		value:    config,
+		data:     data,
 		hash:     sha256.Sum256(data),
 		revision: revision,
 	}, nil
